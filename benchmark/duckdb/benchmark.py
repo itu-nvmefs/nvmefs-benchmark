@@ -6,167 +6,13 @@ import time
 from typing import Callable
 from runner.factory import create_benchmark_runner
 from device.nvme import NvmeDevice, setup_device, calculate_waf
-from database import duckdb
+from database import database
 from datetime import datetime
 import multiprocessing.pool
-
-@dataclass
-class Arguments:
-    duration: int = 0
-    parallel: int = 0
-    threads: int = 1
-    repetitions: int = 0
-    scale_factor: int = 1
-    buffer_manager_mem_size: int = 50
-    device: str = ""
-    io_backend: str = ""
-    use_fdp: bool = False
-    use_generic_device: bool = False
-    benchmark: str = ""
-    mount_path: str = None
-    input_dir: str = "./"
-
-    def valid(self) -> bool:
-        if self.use_fdp and self.device is None:
-            print("Device path is required")
-            return False
-
-        if (self.repetitions == 0 and self.duration == 0) or (self.repetitions != 0 and self.duration != 0):
-            print("Either duration or repetitions must be set")
-            return False
-        
-        return True
-
-    @staticmethod
-    def parse_args():
-        parser = argparse.ArgumentParser()
-
-        parser.add_argument(
-            "benchmark",
-            type=str,
-            help="Name of the benchmark to run(tpch)",
-            default="tpch")
-
-        parser.add_argument(
-            "-s",
-            "--sf",
-            type=int,
-            help="Scale factor to use for the benchmark",
-            default=1)
-
-        parser.add_argument(
-            "-d",
-            "--duration",
-            type=int,
-            help="Duration in minutes to run the benchmark",
-            default=0
-        )
-
-        parser.add_argument(
-            "-r",
-            "--repetitions",
-            type=int,
-            help="Amount of repetitions to run the benchmark",
-            default=0
-        )
-
-        parser.add_argument(
-            "-m",
-            "--memory_limit",
-            type=int,
-            help="Memory limit to use for the benchmark for the buffer manager in MB",
-            default=50
-        )
-
-        parser.add_argument(
-            "-p",
-            "--device_path",
-            type=str,
-            help="File path to the device to run the benchmark on(/dev/nvme1)",
-            default=None
-        )
-
-        parser.add_argument(
-            "-g",
-            "--generic_device",
-            help="Use the generic device path for the benchmark",
-            action="store_true",
-            default=False
-        )
-
-        parser.add_argument(
-            "-b",
-            "--backend",
-            type=str,
-            help="Backend to use for the benchmark ('io_uring_cmd', 'io_uring')",
-            default="io_uring_cmd"
-        )
-
-        parser.add_argument(
-            "-f",
-            "--fdp",
-            action="store_true",
-            help="Use file descriptor passing for the benchmark",
-            default=False
-        )
-
-        parser.add_argument(
-            "-mp",
-            "--mount_path",
-            type=str,
-            help="Mount path to use for the benchmark",
-            default=None
-        )
-
-        parser.add_argument(
-            "-i",
-            "--input_directory",
-            type=str,
-            help="Input directory to use for the benchmark. That is the place where data files are stored and can data can be loaded from",
-            default="./"
-        )
-
-        parser.add_argument(
-            "-t",
-            "--threads",
-            type=int,
-            help="Number of threads to use for the duckdb instance",
-            default=1
-        )
-
-        parser.add_argument(
-            "-par",
-            "--parallel",
-            type=int,
-            help="Number of parallel executions of queries against duckdb",
-            default=0
-        )
-
-        args = parser.parse_args()
-        
-        arguments: Arguments = Arguments(
-            duration=args.duration,
-            repetitions=args.repetitions,
-            device=args.device_path,
-            scale_factor=args.sf,
-            buffer_manager_mem_size=args.memory_limit,
-            io_backend=args.backend,
-            use_fdp=args.fdp,
-            use_generic_device=args.generic_device,
-            benchmark=args.benchmark,
-            mount_path=args.mount_path,
-            input_dir=args.input_directory,
-            threads=args.threads,
-            parallel=args.parallel
-        )
-
-        if not arguments.valid():
-            parser.print_help()
-            exit(1)
-        
-        return arguments
+from args import Arguments
 
 type SetupFunc = Callable[[], duckdb.Database]
+
 def prepare_setup_func(args: Arguments) -> SetupFunc:
     """
     Prepare the database configuration and database extensions that are needed depending on the storage device
@@ -205,7 +51,7 @@ def prepare_setup_func(args: Arguments) -> SetupFunc:
 
     return setup_nvme if args.mount_path is None else setup_normal
 
-def run_execution_threads(num_threads: int, benchmark_runner, db: duckdb.Database, span: int):
+def run_execution_threads(num_threads: int, benchmark_runner, db: database.Database, span: int):
 
     def run_benchmark(db: duckdb.Database, span: int):
         db.execute("USE bench;")

@@ -3,21 +3,26 @@ import pathlib
 import subprocess
 from pathlib import Path
 import time
+import re
+
+def run_cmd(cmd: str):
+    subprocess.run(cmd, shell=True, check=True)
 
 class NvmeDeviceNamespace:
-    def __init__(self, device_path: str, dev_path_id: int, namespace_id: int, number_of_blocks: int, log_id: str, sent_offset: list[int], written_offset:list[int], is_mounted: bool = False):
-        self.base_device_path = device_path
+    def __init__(self, base_device_path: str, namespace_id: int, number_of_blocks: int, log_id: str, sent_offset: list[int], written_offset:list[int], is_mounted: bool = False):
+        self.base_device_path = base_device_path
         self.namespace_id = namespace_id
-        self.dev_path_id = dev_path_id
         self.is_mounted = is_mounted
         self.block_size = 4096
-        self.device_id = int(device_path[-1])
+
+        match = re.search(r'nvme(\d+)', base_device_path)
+        if not match: raise ValueError(f"Invalid NVMe device path: {base_device_path}")
+        self.device_id = int(match.group(1))
 
         # TODO: Document environment variables in readme
         self.log_id = log_id
         self.sent_offset = sent_offset
         self.written_offset = written_offset
-
         self.number_of_blocks = number_of_blocks
 
     def delete(self):
@@ -25,28 +30,26 @@ class NvmeDeviceNamespace:
         Deletes a namespace on the device. After this is called the namespace is no longer usable
         """
         if self.is_mounted:
-            os.system(f"umount -l {self.get_device_path()}")
-
-        os.system(f"nvme delete-ns {self.base_device_path} --namespace-id={self.namespace_id}")
+            run_cmd(f"umount -l {self.get_device_path()}")
+        run_cmd(f"nvme delete-ns {self.base_device_path} --namespace-id={self.namespace_id}")
 
     def deallocate_blocks(self):
         """
         Deallocates all blocks on the device
         """
-
-        os.system(f"nvme dsm {self.base_device_path} --namespace-id={self.namespace_id} --ad -s 0 -b {self.number_of_blocks}")
+        run_cmd(f"nvme dsm {self.base_device_path} --namespace-id={self.namespace_id} --ad -s 0 -b {self.number_of_blocks}")
     
     def get_generic_device_path(self):
         """
         Returns the generic device path for the namespace
         """
-        return f"/dev/ng{self.device_id}n{self.dev_path_id}"
+        return f"/dev/ng{self.device_id}n{self.namespace_id}"
     
     def get_device_path(self):
         """
         Returns the device path for the namespace
         """
-        return f"/dev/nvme{self.device_id}n{self.dev_path_id}"
+        return f"/dev/nvme{self.device_id}n{self.namespace_id}"
     
 
     def get_written_bytes(self):
@@ -56,7 +59,6 @@ class NvmeDeviceNamespace:
         media_written = int.from_bytes(res[self.written_offset[0]:self.written_offset[1]+1], byteorder="little") 
 
         if host_written == 0: return (0,0)
-
         return (host_written, media_written)
     
 
@@ -65,25 +67,31 @@ class NvmeDevice:
     Represents an NVMe device. This class is used to interact with the administrative interface of the NVMe device using the nvme client.
     This is without the namespace suffix,e.g. /dev/nvme0
     """
-    def __init__(self, device_path: str):
+    def __init__(self, base_device_path: str):
         self.namespaces = []
-        self.base_device_path = device_path
+        self.base_device_path = base_device_path
         self.block_size = 4096
-        self.device_id = int(device_path[-1])
+
+        match = re.search(r'nvme(\d+)', base_device_path)
+        if not match:
+            raise ValueError(f"Invalid NVMe device path: {base_device_path}")
+        self.device_id = int(match.group(1))
 
         # TODO: Document environment variables in readme
         self.log_id = os.getenv("LOGIDWAF")
-        self.sent_offset = list(map(int,os.getenv("SENT_OFFSET").split("-")))
-        self.written_offset = list(map(int, os.getenv("WRITTEN_OFFSET").split("-")))
+        env_sent = os.getenv("SENT_OFFSET")
+        env_written = os.getenv("WRITTEN_OFFSET")
+        self.sent_offset = list(map(int, env_sent.split("-"))) if env_sent else []
+        self.written_offset = list(map(int, env_written.split("-"))) if env_written else []
 
         if self.log_id is None :
-            raise Exception("Environment variable LOGIDWAF")
+            raise Exception("Environment variable LOGIDWAF is missing")
 
-        self.number_of_blocks, self.unallocated_number_of_blocks = self.__get_device_info(device_path)
+        self.number_of_blocks, self.unallocated_number_of_blocks = self.__get_device_info()
     
-    def __get_device_info(self, device_path: str):
-        total_blocks_command = f"nvme id-ctrl {device_path} | grep 'tnvmcap' | sed 's/,//g' | awk -v BS={self.block_size} '{{print $3/BS}}'"
-        unallocated_blocks_command = f"nvme id-ctrl {device_path} | grep 'unvmcap' | sed 's/,//g' | awk -v BS={self.block_size} '{{print $3/BS}}'"
+    def __get_device_info(self):
+        total_blocks_command = f"nvme id-ctrl {self.base_device_path} | grep 'tnvmcap' | sed 's/,//g' | awk -v BS={self.block_size} '{{print $3/BS}}'"
+        unallocated_blocks_command = f"nvme id-ctrl {self.base_device_path} | grep 'unvmcap' | sed 's/,//g' | awk -v BS={self.block_size} '{{print $3/BS}}'"
 
         block_output = subprocess.check_output(total_blocks_command, shell=True)
         unallocated_block_output = subprocess.check_output(unallocated_blocks_command, shell=True)
@@ -111,7 +119,6 @@ class NvmeDevice:
         """
         Deallocates all blocks on the device
         """
-
         namespace.deallocate_blocks()
     
     def deallocate_nsid(self, namespace_id: int):
@@ -131,36 +138,32 @@ class NvmeDevice:
         """
         Enables flexible data placement(FDP) on the device
         """
-
-        os.system(f"nvme set-feature {self.base_device_path} -f 0x1D -c 1 -s")
+        run_cmd(f"nvme set-feature {self.base_device_path} -f 0x1D -c 1 -s")
 
     def disable_fdp(self):
         """
         Disables flexible data placement(FDP) on the device
         """
-        
-        os.system(f"nvme set-feature {self.base_device_path} -f 0x1D -c 0 -s")
+        run_cmd(f"nvme set-feature {self.base_device_path} -f 0x1D -c 0 -s")
 
     def delete_namespace(self, namespace: NvmeDeviceNamespace):
         """
         Deletes a namespace on the device
         """
-
         namespace.delete()
     
     def delete_namespace_nsid(self, namespace_id: int):
         """
         Deletes a namespace on the device
         """
-
         for namespace in self.namespaces:
             if namespace.namespace_id == namespace_id:
                 namespace.delete()
                 return
         
-        os.system(f"nvme delete-ns {self.base_device_path} --namespace-id={namespace_id}")
+        run_cmd(f"nvme delete-ns {self.base_device_path} --namespace-id={namespace_id}")
 
-    def create_namespace(self, device_path: str, namespace_id: int, enable_fdp: bool = False, mount_path:str = None):
+    def create_namespace(self, namespace_id: int, enable_fdp: bool = False, mount_path:str = None):
         """
         Creates a namespace on the device and attaches it
 
@@ -170,36 +173,24 @@ class NvmeDevice:
         """
 
         # Create a namespace on the device
-        result = 1
         ns_number_of_blocks = self.unallocated_number_of_blocks
-        
         print(f"Creating namespace {namespace_id} with {ns_number_of_blocks} blocks")
+        
         if enable_fdp:
-            result = os.system(f"nvme create-ns {device_path} -b {self.block_size} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks} --nphndls=6 --phndls=0,1,2,3,4,5")
+            run_cmd(f"nvme create-ns {self.base_device_path} -b {self.block_size} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks} --nphndls=6 --phndls=0,1,2,3,4,5")
         else: 
-            result = os.system(f"nvme create-ns {device_path} -b {self.block_size} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks}")
+            run_cmd(f"nvme create-ns {self.base_device_path} -b {self.block_size} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks}")
 
-        if result != 0:
-            raise Exception("Failed to create namespace")
-
-        # Attach the namespace to the device
-        result = os.system(f"nvme attach-ns {device_path} --namespace-id={namespace_id} --controllers=0x7")
-
-        if result != 0:
-            raise Exception("Failed to attach namespace")
+        run_cmd(f"nvme attach-ns {self.base_device_path} --namespace-id={namespace_id} --controllers=0x7")
         
         is_mounted = mount_path is not None
-        new_namespace = NvmeDeviceNamespace(device_path, namespace_id, namespace_id, ns_number_of_blocks, self.log_id, self.sent_offset, self.written_offset, is_mounted)
+        new_namespace = NvmeDeviceNamespace(self.base_device_path, namespace_id, ns_number_of_blocks, self.log_id, self.sent_offset, self.written_offset, is_mounted)
         self.namespaces.append(new_namespace)
 
-
         if is_mounted:
-            time.sleep(10) # Wait for the namespace to be created
-            os.system(f"mkfs.ext4 {new_namespace.get_device_path()} -b {self.block_size} {ns_number_of_blocks}") # Format the device namespace
-            result = os.system(f"mount {new_namespace.get_device_path()} {mount_path}") # Mount the device namespace to a mount path
-
-            if result != 0:
-                raise Exception("Failed to mount namespace")
+            time.sleep(10) 
+            run_cmd(f"mkfs.ext4 {new_namespace.get_device_path()} -b {self.block_size} {ns_number_of_blocks}") 
+            run_cmd(f"mount {new_namespace.get_device_path()} {mount_path}") 
         
         return new_namespace
 
@@ -207,24 +198,21 @@ class NvmeDevice:
         for namespace in self.namespaces:
             if namespace.namespace_id == namespace_id:
                 return namespace.get_written_bytes()
-
         raise Exception(f"Namespace {namespace_id} not found")
 
     def get_written_bytes(self):
-        cmd = f"""nvme get-log {self.base_device_path} --log-id={self.log_id} --log-len=512 -b"""
+        cmd = f"nvme get-log {self.base_device_path} --log-id={self.log_id} --log-len=512 -b"
         res = subprocess.check_output(cmd, shell=True)
         host_written = int.from_bytes(res[self.sent_offset[0]:self.sent_offset[1]+1], byteorder="little") 
         media_written = int.from_bytes(res[self.written_offset[0]:self.written_offset[1]+1], byteorder="little") 
 
         if host_written == 0: return (0,0)
-
         return (host_written, media_written)
 
     def reset(self):
         """
         Reset the device by deleting all namespaces and unmounting mounted namespaces
         """
-        
         for namespace in self.namespaces:
             namespace.deallocate_blocks()
             namespace.delete()
@@ -235,10 +223,9 @@ def calculate_waf(host_written_bytes, media_written_bytes):
     """
     if host_written_bytes == 0:
         return 0
-
     return media_written_bytes / host_written_bytes
 
-def setup_device(device: NvmeDevice, namespace_id:int = 1, enable_fdp: bool = False, mount_path: str = None) -> NvmeDeviceNamespace:
+def setup_device(device: NvmeDevice, namespace_id: int = 1, enable_fdp: bool = False, mount_path: str = None) -> NvmeDeviceNamespace:
     """
     Sets up the device by creating a namespace and enabling FDP if required
     """
@@ -257,4 +244,4 @@ def setup_device(device: NvmeDevice, namespace_id:int = 1, enable_fdp: bool = Fa
     #     device.disable_fdp()
     
     # Create new namespace with a new configuration
-    return device.create_namespace(device.base_device_path, namespace_id, enable_fdp, mount_path=mount_path)
+    return device.create_namespace(namespace_id, enable_fdp, mount_path=mount_path)

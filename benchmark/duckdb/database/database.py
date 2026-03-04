@@ -1,3 +1,4 @@
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 import duckdb
@@ -30,8 +31,17 @@ class Database(ABC):
     def _connect(self):
         if not self.get_is_connected:
             self.connection: duckdb.DuckDBPyConnection = duckdb.connect(
-                config={"allow_unsigned_extensions": "true", "max_temp_directory_size": "150GB", "memory_limit": f"{self.memory}MB", "threads": self.threads})
-    
+                config={"allow_unsigned_extensions": "true",
+                        "max_temp_directory_size": "150GB",
+                        "memory_limit": f"{self.memory}MB",
+                        "threads": self.threads
+                    }
+                )
+
+    def get_cursor(self):
+        """Helper to get a cursor for concurrent threads"""
+        return self.connection.cursor()
+
     def create_concurrent_connection(self):
         return ConcurrentDatabase(self.db_path, self.threads, self.memory, self.connection.cursor())
 
@@ -46,7 +56,18 @@ class Database(ABC):
     
     def install_extension(self, name: str):
         self.connection.install_extension(name)
-    
+
+    def disable_object_cache(self):
+        self.execute("PRAGMA disable_object_cache;")
+
+    def set_memory_limit(self, memory_mb: int):
+        self.execute(f"PRAGMA memory_limit='{memory_mb}MB';")
+
+    def enable_profiling(self):
+        self.execute("PRAGMA enable_profiling='json';")
+        self.execute("PRAGMA profiling_output='profile.json';")
+        self.execute("PRAGMA profiling_mode='detailed';")
+
     def close(self):
         self.connection.close()
         self.connection = None
@@ -111,25 +132,26 @@ class NvmeDatabase(Database):
     """
 
     def __init__(self, db_path: str, threads: int, memory: int, config: ConnectionConfig):
-        super().__init__(db_path, threads, memory)
         self.device_path = config.device
         self.backend = config.backend
         self.use_fdp = config.use_fdp
         self.number_of_fdp_handles = 7
+        super().__init__(db_path, threads, memory)
     
     def _setup(self):
-        install_extension("../../nvmefs/build/release/extension/nvmefs/nvmefs.duckdb_extension", self)
+        extension_path = os.path.abspath(f"/home/group01/nvmefs/build/release/extension/nvmefs/nvmefs.duckdb_extension")
         super()._connect()
+        self.install_extension(extension_path)
         self.add_extension("nvmefs")
         self.execute(f"""CREATE OR REPLACE PERSISTENT SECRET nvmefs (
                         TYPE NVMEFS,
                         nvme_device_path '{self.device_path}',
-                        fdp_plhdls       '{self.number_of_fdp_handles}',
                         backend          '{self.backend}'
                     );""")
         
         self.execute(f"ATTACH DATABASE '{self.db_path}' AS bench (READ_WRITE);")
         self.execute("USE bench;")
+        self.disable_object_cache()
 
 def add_extension(name: str, db: Database = None):
     if db is None or not db.get_is_connected:

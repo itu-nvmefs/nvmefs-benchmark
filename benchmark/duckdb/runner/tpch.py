@@ -1,6 +1,6 @@
 import os
 import time
-from database.duckdb import Database
+from database.database import Database
 
 TPCH_BENCHMARK_NAME = "tpch"
 

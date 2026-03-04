@@ -1,7 +1,7 @@
 import os
 import csv
 import time
-from database.duckdb import Database
+from database.database import Database
 
 OOCHA_SPILL_BENCHMARK_NAME = "oocha-spill"
 
