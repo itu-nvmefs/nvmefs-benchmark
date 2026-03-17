@@ -36,7 +36,7 @@ class NvmeDeviceNamespace:
         """
         Deallocates all blocks on the device
         """
-        run_cmd(f"nvme dsm {self.device_path} --namespace-id={self.namespace_id} --ad -s 0 -b {self.number_of_blocks}")
+        run_cmd(f"nvme dsm {self.device_path} --namespace-id={self.namespace_id} --ad --slbs=0 --blocks={self.number_of_blocks}")
     
     def get_generic_device_path(self):
         """
@@ -108,7 +108,7 @@ class NvmeDevice:
             if namespace.namespace_id == namespace_id:
                 return namespace.number_of_blocks
         
-        command = f"nvme id-ns {self.device_path} -n {namespace_id} | grep 'nvmcap' | sed 's/,//g' | awk -v BS={self.block_size} '{{print $3/BS}}'"
+        command = f"nvme id-ns {self.device_path} --namespace-id={namespace_id} | grep 'nvmcap' | sed 's/,//g' | awk -v BS={self.block_size} '{{print $3/BS}}'"
         block_output = subprocess.check_output(command, shell=True)
         number_of_blocks = int(block_output) 
 
@@ -130,20 +130,20 @@ class NvmeDevice:
                 return
         
         number_of_blocks = self.get_ns_block_amount(namespace_id)
-        os.system(f"nvme dsm {self.device_path} --namespace-id={namespace_id} --ad -s 0 -b {number_of_blocks}")
+        run_cmd(f"nvme dsm {self.device_path}n{namespace_id} --ad --slbs=0 --blocks={number_of_blocks}")
 
 
-    def enable_fdp(self):
+    def enable_fdp(self, endgrp_id: int = 1):
         """
         Enables flexible data placement(FDP) on the device
         """
-        run_cmd(f"nvme set-feature {self.device_path} -f 0x1D -c 1 -s")
+        run_cmd(f"nvme fdp feature {self.device_path} --endgrp-id={endgrp_id} --enable-conf-idx=0")
 
-    def disable_fdp(self):
+    def disable_fdp(self, endgrp_id: int = 1):
         """
         Disables flexible data placement(FDP) on the device
         """
-        run_cmd(f"nvme set-feature {self.device_path} -f 0x1D -c 0 -s")
+        run_cmd(f"nvme fdp feature {self.device_path} --endgrp-id={endgrp_id} --disable")
 
     def delete_namespace(self, namespace: NvmeDeviceNamespace):
         """
@@ -162,13 +162,14 @@ class NvmeDevice:
         
         run_cmd(f"nvme delete-ns {self.device_path} --namespace-id={namespace_id}")
 
-    def create_namespace(self, namespace_id: int, enable_fdp: bool = False, mount_path:str = None):
+    def create_namespace(self, namespace_id: int, enable_fdp: bool = False, mount_path:str = None, endgrp_id: int = 1):
         """
         Creates a namespace on the device and attaches it
 
         :param namespace_id: The ID of the namespace to create
         :param enable_fdp: Whether to enable flexible data placement
         :param mount_path: The mount path of the namespace
+        :param endgrp_id: The ID of the endurance group on the device
         """
 
         # Create a namespace on the device
@@ -176,11 +177,13 @@ class NvmeDevice:
         print(f"Creating namespace {namespace_id} with {ns_number_of_blocks} blocks")
         
         if enable_fdp:
-            run_cmd(f"nvme create-ns {self.device_path} -b {self.block_size} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks} --nphndls=6 --phndls=0,1,2,3,4,5")
+            # TODO: Implement a way to dynamically assign placement handles, for nvme devices with multiple namespaces
+            run_cmd(f"nvme create-ns {self.device_path} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks} --flbas=0 --endg-id={endgrp_id} --nphndls=4 --phndls=0,1,2,3")
         else: 
-            run_cmd(f"nvme create-ns {self.device_path} -b {self.block_size} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks}")
+            run_cmd(f"nvme create-ns {self.device_path} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks}")
 
         run_cmd(f"nvme attach-ns {self.device_path} --namespace-id={namespace_id} --controllers=0x7")
+        run_cmd(f"nvme ns-rescan {self.device_path}")
         
         is_mounted = mount_path is not None
         new_namespace = NvmeDeviceNamespace(self.device_path, namespace_id, ns_number_of_blocks, self.log_id, self.sent_offset, self.written_offset, is_mounted)
@@ -224,7 +227,7 @@ def calculate_waf(host_written_bytes, media_written_bytes):
         return 0
     return media_written_bytes / host_written_bytes
 
-def setup_device(device: NvmeDevice, namespace_id: int = 1, enable_fdp: bool = False, mount_path: str = None) -> NvmeDeviceNamespace:
+def setup_device(device: NvmeDevice, namespace_id: int = 1, enable_fdp: bool = False, mount_path: str = None, endgrp_id: int = 1) -> NvmeDeviceNamespace:
     """
     Sets up the device by creating a namespace and enabling FDP if required
     """
@@ -235,12 +238,11 @@ def setup_device(device: NvmeDevice, namespace_id: int = 1, enable_fdp: bool = F
     if device_ns_path.exists():
         device.deallocate_nsid(namespace_id)
         device.delete_namespace_nsid(namespace_id)
-    
-    # Ensure that FDP is enabled / disabled
-    # if enable_fdp:
-    #     device.enable_fdp()
-    # else:
-    #     device.disable_fdp()
+
+    if enable_fdp:
+        device.enable_fdp(endgrp_id)
+    else:
+        device.disable_fdp(endgrp_id)
     
     # Create new namespace with a new configuration
-    return device.create_namespace(namespace_id, enable_fdp, mount_path=mount_path)
+    return device.create_namespace(namespace_id, enable_fdp, mount_path=mount_path, endgrp_id=endgrp_id)
