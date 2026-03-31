@@ -8,8 +8,19 @@ class ConnectionConfig:
     device: str = ""
     backend: str = ""
     use_fdp: bool = False
+    fdp_strategy: str = ""
     memory: int = 0
     threads: int = 0
+
+    def get_fdp_mapping(self) -> str:
+        mappings = {
+            "baseline": ".db:0,.wal:0,.tmp:0",
+            "temp-isolated": ".db:0,.wal:0,.tmp:1",
+            "wal-isolated": ".db:0,.wal:1,.tmp:0",
+            "fully-isolated": ".db:0,.tmp:1,.wal:2"
+        }
+        return mappings.get(self.fdp_strategy.lower(), mappings["baseline"])
+
 
 class Database(ABC):
 
@@ -105,7 +116,8 @@ class ConcurrentDatabase(Database):
 class SPDKDatabase(Database):
     def __init__(self, db_path: str, threads:int, memory: int, config: ConnectionConfig):
         super().__init__(db_path, threads, memory)
-        self.number_of_fdp_handles = 7
+        self.config = config
+        self.number_of_fdp_handles = 8
         self.device_path = config.device
         self.use_fdp = config.use_fdp
         self.backend = config.backend
@@ -115,13 +127,18 @@ class SPDKDatabase(Database):
         install_extension("../../nvmefs/build/release/extension/nvmefs/nvmefs.duckdb_extension", self)
         super()._connect()
         self.add_extension("nvmefs")
-        self.execute(f"""CREATE OR REPLACE PERSISTENT SECRET nvmefs (
-                        TYPE NVMEFS,
-                        nvme_device_path '{self.device_path}',
-                        fdp_plhdls       '{self.number_of_fdp_handles}',
-                        backend          '{self.backend}'
-                    );""")
-        
+
+        secret = f"""CREATE OR REPLACE PERSISTENT SECRET nvmefs (
+                     TYPE NVMEFS,
+                     nvme_device_path '{self.device_path}',
+                     fdp_plhdls       '{self.number_of_fdp_handles}',
+                     backend          '{self.backend}',
+                     meta             'use_default_async|no_memory_manager'"""
+        if self.use_fdp:
+            secret += f",\n fdp_mapping '{self.config.get_fdp_mapping()}'"
+        secret += "\n                    );"
+
+        self.execute(secret)
         self.execute(f"ATTACH DATABASE '{self.db_path}' AS bench (READ_WRITE);")
         self.execute("USE bench;")
         
@@ -132,10 +149,13 @@ class NvmeDatabase(Database):
     """
 
     def __init__(self, db_path: str, threads: int, memory: int, config: ConnectionConfig):
+        self.config = config
         self.device_path = config.device
         self.backend = config.backend
         self.use_fdp = config.use_fdp
-        self.number_of_fdp_handles = 7
+        self.fdp_strategy = config.fdp_strategy
+        self.number_of_fdp_handles = 8
+
         super().__init__(db_path, threads, memory)
     
     def _setup(self):
@@ -143,12 +163,18 @@ class NvmeDatabase(Database):
         super()._connect()
         self.install_extension(extension_path)
         self.add_extension("nvmefs")
-        self.execute(f"""CREATE OR REPLACE PERSISTENT SECRET nvmefs (
-                        TYPE NVMEFS,
-                        nvme_device_path '{self.device_path}',
-                        backend          '{self.backend}'
-                    );""")
-        
+
+        secret = f"""CREATE OR REPLACE PERSISTENT SECRET nvmefs (
+                             TYPE NVMEFS,
+                             nvme_device_path '{self.device_path}',
+                             fdp_plhdls       '{self.number_of_fdp_handles}',
+                             backend          '{self.backend}',
+                             meta             'use_default_async|no_memory_manager'"""
+        if self.use_fdp:
+            secret += f",\n fdp_mapping '{self.config.get_fdp_mapping()}'"
+        secret += "\n                    );"
+
+        self.execute(secret)
         self.execute(f"ATTACH DATABASE '{self.db_path}' AS bench (READ_WRITE);")
         self.execute("USE bench;")
         self.disable_object_cache()

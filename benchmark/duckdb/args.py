@@ -12,6 +12,7 @@ class Arguments:
     device: str = ""
     io_backend: str = ""
     use_fdp: bool = False
+    fdp_strategy: str = ""
     use_generic_device: bool = False
     benchmark: str = ""
     mount_path: str = None
@@ -61,6 +62,10 @@ class Arguments:
         parser.add_argument("-f", "--fdp", action="store_true", default=False,
                             help="Enable File Descriptor Passing (FDP)")
 
+        parser.add_argument("-fs", "--fdp_strategy", default=None,
+                            choices=["baseline", "temp-isolated", "wal-isolated", "fully-isolated"],
+                            help="FDP placement strategy to use")
+
         parser.add_argument("-mp", "--mount_path", type=str, default=None,
                             help="Mount path for normal file system tests")
 
@@ -86,6 +91,7 @@ class Arguments:
             buffer_manager_mem_size=args.memory_limit,
             io_backend=args.backend,
             use_fdp=args.fdp,
+            fdp_strategy=args.fdp_strategy,
             use_generic_device=args.generic_device,
             benchmark=args.benchmark,
             mount_path=args.mount_path,

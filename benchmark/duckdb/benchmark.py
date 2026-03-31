@@ -11,7 +11,7 @@ from datetime import datetime
 import multiprocessing.pool
 from args import Arguments
 
-type SetupFunc = Callable[[], duckdb.Database]
+type SetupFunc = Callable[[], database.Database]
 
 def prepare_setup_func(args: Arguments) -> SetupFunc:
     """
@@ -26,24 +26,22 @@ def prepare_setup_func(args: Arguments) -> SetupFunc:
         print(f"Using device path: {device_path}")
 
         # Ensure that the extension is loaded and the
-        config = duckdb.ConnectionConfig(
+        config = database.ConnectionConfig(
             device_path, 
             args.io_backend, 
-            args.use_fdp)
-        # print("Configurring database")
-        # config_db = duckdb.connect("nvmefs:///bench.db", args.threads, args.buffer_manager_mem_size, config) # To set secrets first # TODO: Change this in the NvmeDatabase
-        # config_db.close()
-        # time.sleep(3)
-        db = duckdb.connect("nvmefs:///bench.db", args.threads, args.buffer_manager_mem_size, config)
+            args.use_fdp,
+            args.fdp_strategy,
+            args.buffer_manager_mem_size,
+            args.threads)
+
+        db = database.connect("nvmefs:///bench.db", args.threads, args.buffer_manager_mem_size, config)
 
         return db, device
     
     def setup_normal():
-
         normal_db_path = os.path.join(args.mount_path, "bench.db")
-
         setup_device(device, namespace_id=2, mount_path=args.mount_path)
-        db: duckdb.Database = duckdb.connect(normal_db_path, args.threads, args.buffer_manager_mem_size)
+        db = database.connect(normal_db_path, args.threads, args.buffer_manager_mem_size)
         temp_dir = os.path.join(args.mount_path, ".tmp")        
         db.execute(f"SET temp_directory = '{temp_dir}';")
 
@@ -53,7 +51,7 @@ def prepare_setup_func(args: Arguments) -> SetupFunc:
 
 def run_execution_threads(num_threads: int, benchmark_runner, db: database.Database, span: int):
 
-    def run_benchmark(db: duckdb.Database, span: int):
+    def run_benchmark(db: database.Database, span: int):
         db.execute("USE bench;")
         return benchmark_runner(db, span)
 
@@ -74,7 +72,7 @@ def start_device_measurements(should_measure: bool, device: NvmeDevice, file_nam
 
     def run(device: NvmeDevice, file: str):
         os.system("sync")
-        previous_host_written, previous_media_written = device.get_written_bytes_nsid(2)
+        previous_host_written, previous_media_written = device.get_written_bytes()
         global RUN_MEASUREMENT
 
         waf_file = open(file, "w+", newline="\n")
@@ -82,11 +80,11 @@ def start_device_measurements(should_measure: bool, device: NvmeDevice, file_nam
         while RUN_MEASUREMENT:
             time.sleep(600)
             os.system("sync")
-            host_written, media_written = device.get_written_bytes_nsid(2)
+            host_written, media_written = device.get_written_bytes()
             if host_written == 0:
                 continue
 
-            # Calculate the Write Amplification Factor (WAF)
+            # Calculate the Write Amplification Factor
             diff_host_written = host_written - previous_host_written
             diff_media_written = media_written - previous_media_written
             waf = calculate_waf(diff_host_written, diff_media_written)
@@ -113,19 +111,24 @@ def start_device_measurements(should_measure: bool, device: NvmeDevice, file_nam
         RUN_MEASUREMENT = False
         waf_measurement_runner.join()
 
-        return
-
     return stop_measurement
 
 if __name__ == "__main__":
-
     args: Arguments = Arguments.parse_args()
+
+    # Device reset and preconditioning
+    print("Resetting device to ensure consistent state...")
+    initial_device = NvmeDevice(args.device)
+    initial_device.reset()
+    # TODO: Execute sequential fill logic (can be done fio or whatever)
+
     setup_device_and_db = prepare_setup_func(args)
 
     run_with_duration = args.duration > 0
     run_with_duration_display = f"dur{args.duration}" if run_with_duration else f"reps{args.repetitions}"
     par = f"p{args.parallel}" if args.parallel > 0 else "s"
-    fdp_name = "fdp" if args.use_fdp else "nofdp"
+
+    fdp_name = args.fdp_strategy if args.use_fdp else "nofdp"
     device_name = "nvme" if args.mount_path is None else "normal"
     name = f"{args.benchmark}-{run_with_duration_display}-{device_name}-mem{args.buffer_manager_mem_size}-{args.io_backend}-sf{args.scale_factor}-t{args.threads}-{par}-{fdp_name}" 
 
@@ -160,6 +163,5 @@ if __name__ == "__main__":
             file.write(result)
     
     db.close()
-    device.reset()
 
     print(f"Benchmark results written to {output_file} and WAF results written to {device_output_file}")

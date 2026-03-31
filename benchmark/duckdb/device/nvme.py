@@ -8,21 +8,16 @@ def run_cmd(cmd: str):
     subprocess.run(cmd, shell=True, check=True)
 
 class NvmeDeviceNamespace:
-    def __init__(self, device_path: str, namespace_id: int, number_of_blocks: int, log_id: str, sent_offset: list[int], written_offset:list[int], is_mounted: bool = False):
+    def __init__(self, device_path: str, namespace_id: int, number_of_blocks: int, is_mounted: bool = False):
         self.device_path = device_path
         self.namespace_id = namespace_id
         self.is_mounted = is_mounted
+        self.number_of_blocks = number_of_blocks
         self.block_size = 4096
 
         match = re.search(r'nvme(\d+)', device_path)
         if not match: raise ValueError(f"Invalid NVMe device path: {device_path}")
         self.device_id = int(match.group(1))
-
-        # TODO: Document environment variables in readme
-        self.log_id = log_id
-        self.sent_offset = sent_offset
-        self.written_offset = written_offset
-        self.number_of_blocks = number_of_blocks
 
     def delete(self):
         """
@@ -49,17 +44,17 @@ class NvmeDeviceNamespace:
         Returns the device path for the namespace
         """
         return f"/dev/nvme{self.device_id}n{self.namespace_id}"
-    
 
     def get_written_bytes(self):
-        cmd = f"""nvme get-log {self.get_device_path()} --log-id={self.log_id} --log-len=512 -b"""
-        res = subprocess.check_output(cmd, shell=True)
-        host_written = int.from_bytes(res[self.sent_offset[0]:self.sent_offset[1]+1], byteorder="little") 
-        media_written = int.from_bytes(res[self.written_offset[0]:self.written_offset[1]+1], byteorder="little") 
+        h_out = subprocess.check_output(f"nvme smart-log {self.device_path}", shell=True, text=True)
+        h_match = re.search(r"Data Units Written.+ (\d+)", h_out)
+        host_written = int(h_match.group(1)) * 512000 if h_match else 0
 
-        if host_written == 0: return 0,0
+        m_out = subprocess.check_output(f"nvme ocp smart-add-log {self.device_path}", shell=True, text=True)
+        m_match = re.search(r"Physical media units written.+\d+ (\d+)", m_out)
+        media_written = int(m_match.group(1)) if m_match else 0
+
         return host_written, media_written
-
 
 class NvmeDevice:
     """
@@ -75,16 +70,6 @@ class NvmeDevice:
         if not match:
             raise ValueError(f"Invalid NVMe device path: {device_path}")
         self.device_id = int(match.group(1))
-
-        # TODO: Document environment variables in readme
-        self.log_id = os.getenv("LOGIDWAF")
-        env_sent = os.getenv("SENT_OFFSET")
-        env_written = os.getenv("WRITTEN_OFFSET")
-        self.sent_offset = list(map(int, env_sent.split("-"))) if env_sent else []
-        self.written_offset = list(map(int, env_written.split("-"))) if env_written else []
-
-        if self.log_id is None :
-            raise Exception("Environment variable LOGIDWAF is missing")
 
         self.number_of_blocks, self.unallocated_number_of_blocks = self.__get_device_info()
     
@@ -186,7 +171,7 @@ class NvmeDevice:
         run_cmd(f"nvme ns-rescan {self.device_path}")
         
         is_mounted = mount_path is not None
-        new_namespace = NvmeDeviceNamespace(self.device_path, namespace_id, ns_number_of_blocks, self.log_id, self.sent_offset, self.written_offset, is_mounted)
+        new_namespace = NvmeDeviceNamespace(self.device_path, namespace_id, ns_number_of_blocks, is_mounted)
         self.namespaces.append(new_namespace)
 
         if is_mounted:
@@ -203,12 +188,14 @@ class NvmeDevice:
         raise Exception(f"Namespace {namespace_id} not found")
 
     def get_written_bytes(self):
-        cmd = f"nvme get-log {self.device_path} --log-id={self.log_id} --log-len=512 -b"
-        res = subprocess.check_output(cmd, shell=True)
-        host_written = int.from_bytes(res[self.sent_offset[0]:self.sent_offset[1]+1], byteorder="little") 
-        media_written = int.from_bytes(res[self.written_offset[0]:self.written_offset[1]+1], byteorder="little") 
+        h_out = subprocess.check_output(f"nvme smart-log {self.device_path}", shell=True, text=True)
+        h_match = re.search(r"Data Units Written.+ (\d+)", h_out)
+        host_written = int(h_match.group(1)) * 512000 if h_match else 0
 
-        if host_written == 0: return 0,0
+        m_out = subprocess.check_output(f"nvme ocp smart-add-log {self.device_path}", shell=True, text=True)
+        m_match = re.search(r"Physical media units written.+\d+ (\d+)", m_out)
+        media_written = int(m_match.group(1)) if m_match else 0
+
         return host_written, media_written
 
     def reset(self):
