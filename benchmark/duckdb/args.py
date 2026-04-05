@@ -18,6 +18,9 @@ class Arguments:
     mount_path: str = None
     input_dir: str = "./"
     sensor_batch_size: int = 100
+    namespace_id: int = 1
+    namespace_size: int = 0
+    precondition: bool = False
     
 
     def valid(self) -> bool:
@@ -81,6 +84,15 @@ class Arguments:
         parser.add_argument("--sensor-batch-size", type=int, default=100,
                             help="Base batch size for sensor benchmark inserts")
 
+        parser.add_argument("--namespace_id", "-ns", type=int, default=1,
+                            help="Namespace id for NVMe device")
+
+        parser.add_argument("--namespace-size", type=int, default=100,
+                            help="Namspace size in blocks for NVMe device")
+
+        parser.add_argument("--precondition", action="store_true", default=False,
+                            help="Execute sequential fill to precondition the SSD before benchmarking")
+
         args = parser.parse_args()
         
         arguments = Arguments(
@@ -98,7 +110,10 @@ class Arguments:
             input_dir=args.input_directory,
             threads=args.threads,
             parallel=args.parallel,
-            sensor_batch_size=args.sensor_batch_size
+            sensor_batch_size=args.sensor_batch_size,
+            namespace_id=args.namespace_id,
+            namespace_size=args.namespace_size,
+            precondition=args.precondition
         )
 
         if not arguments.valid():
