@@ -19,7 +19,7 @@ def prepare_setup_func(args: Arguments) -> SetupFunc:
     device = NvmeDevice(args.device) if args.device else None
 
     def setup_nvme():
-        device_namespace = setup_device(device, namespace_id=2, enable_fdp=args.use_fdp, size_blocks=args.namespace_size)
+        device_namespace = setup_device(device, namespace_id=args.namespace_id, enable_fdp=args.use_fdp, size_blocks=args.namespace_size)
         device_path = device_namespace.get_generic_device_path() if args.use_generic_device else device_namespace.get_device_path()
 
         print(f"Using device path: {device_path}")
@@ -37,7 +37,7 @@ def prepare_setup_func(args: Arguments) -> SetupFunc:
     
     def setup_normal():
         normal_db_path = os.path.join(args.mount_path, "bench.db")
-        setup_device(device, namespace_id=2, mount_path=args.mount_path, size_blocks=args.namespace_size)
+        setup_device(device, namespace_id=args.namespace_id, mount_path=args.mount_path, size_blocks=args.namespace_size)
         db = database.connect(normal_db_path, args.threads, args.buffer_manager_mem_size)
         temp_dir = os.path.join(args.mount_path, ".tmp")        
         db.execute(f"SET temp_directory = '{temp_dir}';")

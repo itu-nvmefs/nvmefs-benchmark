@@ -81,13 +81,13 @@ class Arguments:
         parser.add_argument("-par", "--parallel", type=int, default=0,
                             help="Number of parallel execution threads (clients)")
                             
-        parser.add_argument("--sensor-batch-size", type=int, default=100,
+        parser.add_argument("--sensor_batch_size", type=int, default=100,
                             help="Base batch size for sensor benchmark inserts")
 
         parser.add_argument("--namespace_id", "-ns", type=int, default=1,
                             help="Namespace id for NVMe device")
 
-        parser.add_argument("--namespace-size", type=int, default=100,
+        parser.add_argument("--namespace_size", type=int, default=100,
                             help="Namspace size in blocks for NVMe device")
 
         parser.add_argument("--precondition", action="store_true", default=False,

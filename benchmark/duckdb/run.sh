@@ -2,9 +2,8 @@
 DURATION=240
 REPETITIONS=6
 DEVICE="/dev/nvme0"
-# TODO: The input dir and mount needs to updated!
-INPUT_DIR="/mnt/data"
-MOUNT="/mnt/itu/duckdb"
+INPUT_DIR="/mnt/data/benchmark/"
+MOUNT="/mnt/duckdb/"
 
 # Max device blocks ~458984375 (1.88 TB / 4096)
 M_SIZE_PRECONDITION=413085937 # ~1.69TB, 90% of device
@@ -13,12 +12,12 @@ XL_SIZE_PRECONDITION=252441406 # ~1.03TB, 55% of device
 
 FDP_STRATEGIES=("baseline" "temp-isolated" "wal-isolated" "fully-isolated")
 
-source ./init.sh
+# source ./init.sh
 
 ###################################
 # TPCH
 ###################################
-TPCH_SIZES=(1 10 100 1000)
+TPCH_SIZES=(1 10) # 100 1000)
 
 # NVMe io_uring_cmd with FDP enabled (all 4 strategies)
 for strategy in "${FDP_STRATEGIES[@]}"; do
