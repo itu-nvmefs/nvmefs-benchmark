@@ -117,7 +117,6 @@ class SPDKDatabase(Database):
     def __init__(self, db_path: str, threads:int, memory: int, config: ConnectionConfig):
         super().__init__(db_path, threads, memory)
         self.config = config
-        self.number_of_fdp_handles = 8
         self.device_path = config.device
         self.use_fdp = config.use_fdp
         self.backend = config.backend
@@ -131,7 +130,6 @@ class SPDKDatabase(Database):
         secret = f"""CREATE OR REPLACE PERSISTENT SECRET nvmefs (
                      TYPE NVMEFS,
                      nvme_device_path '{self.device_path}',
-                     fdp_plhdls       '{self.number_of_fdp_handles}',
                      backend          '{self.backend}',
                      meta             'use_default_async|no_memory_manager'"""
         if self.use_fdp:
@@ -154,12 +152,11 @@ class NvmeDatabase(Database):
         self.backend = config.backend
         self.use_fdp = config.use_fdp
         self.fdp_strategy = config.fdp_strategy
-        self.number_of_fdp_handles = 8
 
         super().__init__(db_path, threads, memory)
     
     def _setup(self):
-        extension_path = os.path.abspath(f"/home/group01/nvmefs/build/release/extension/nvmefs/nvmefs.duckdb_extension")
+        extension_path = os.path.abspath(f"/home/itu/nvmefs/build/release/extension/nvmefs/nvmefs.duckdb_extension")
         super()._connect()
         self.install_extension(extension_path)
         self.add_extension("nvmefs")
@@ -167,7 +164,6 @@ class NvmeDatabase(Database):
         secret = f"""CREATE OR REPLACE PERSISTENT SECRET nvmefs (
                              TYPE NVMEFS,
                              nvme_device_path '{self.device_path}',
-                             fdp_plhdls       '{self.number_of_fdp_handles}',
                              backend          '{self.backend}',
                              meta             'use_default_async|no_memory_manager'"""
         if self.use_fdp:

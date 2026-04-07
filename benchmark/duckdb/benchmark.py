@@ -102,7 +102,7 @@ def start_device_measurements(device: NvmeDevice, file_name: str):
         print("WAF measurement complete")
 
     print("Starting WAF measurement")
-    waf_measurement_thread = Thread(target=run, args=(device, file_name))
+    waf_measurement_thread = Thread(target=run, daemon=True)
     waf_measurement_thread.start()
 
     def stop_measurement():

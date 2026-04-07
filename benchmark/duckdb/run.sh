@@ -2,7 +2,7 @@
 DURATION=240
 REPETITIONS=6
 DEVICE="/dev/nvme0"
-INPUT_DIR="/mnt/data/benchmark/"
+INPUT_DIR="/mnt/data/benchmark/tpch/"
 MOUNT="/mnt/duckdb/"
 
 # Max device blocks ~458984375 (1.88 TB / 4096)
@@ -17,7 +17,7 @@ FDP_STRATEGIES=("baseline" "temp-isolated" "wal-isolated" "fully-isolated")
 ###################################
 # TPCH
 ###################################
-TPCH_SIZES=(1 10) # 100 1000)
+TPCH_SIZES=(100) # 100 1000)
 
 # NVMe io_uring_cmd with FDP enabled (all 4 strategies)
 for strategy in "${FDP_STRATEGIES[@]}"; do

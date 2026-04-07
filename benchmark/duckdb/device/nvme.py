@@ -165,7 +165,7 @@ class NvmeDevice:
         if enable_fdp:
             run_cmd(f"nvme create-ns {self.device_path} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks} --flbas=0 --endg-id={endgrp_id} --nphndls=4 --phndls=0,1,2,3")
         else: 
-            run_cmd(f"nvme create-ns {self.device_path} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks}")
+            run_cmd(f"nvme create-ns {self.device_path} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks} --flbas=0")
 
         run_cmd(f"nvme attach-ns {self.device_path} --namespace-id={namespace_id} --controllers=0x7")
         run_cmd(f"nvme ns-rescan {self.device_path}")
