@@ -2,7 +2,7 @@
 DURATION=240
 REPETITIONS=6
 DEVICE="/dev/nvme0"
-INPUT_DIR="/mnt/data/benchmark/tpch/"
+INPUT_DIR="/mnt/data/benchmark/"
 MOUNT="/mnt/duckdb/"
 
 # Max device blocks ~458984375 (1.88 TB / 4096)

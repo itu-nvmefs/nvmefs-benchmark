@@ -5,7 +5,7 @@ from database.database import Database
 TPCH_BENCHMARK_NAME = "tpch"
 
 def setup_tpch_benchmark(db: Database, input_dir_path: str, scale_factor: int):
-    input_file_path = os.path.join(input_dir_path, f"tpch-sf{scale_factor}.db")
+    input_file_path = os.path.join(input_dir_path, TPCH_BENCHMARK_NAME, f"tpch-sf{scale_factor}.db")
 
     if not os.path.exists(input_file_path):
         print(f"ERROR: TPCH benchmark {input_file_path} does not exist")
