@@ -1,4 +1,3 @@
-import subprocess
 import os
 from threading import Thread
 import time
@@ -72,32 +71,36 @@ def start_device_measurements(device: NvmeDevice, file_name: str):
     Returns a function to stop measurement
     """
 
+    global RUN_MEASUREMENT
+    RUN_MEASUREMENT = True
+
+    os.system("sync")
+    start_host, start_media = device.get_written_bytes()
+
+    with open(file_name, "w", newline="\n") as waf_file:
+        waf_file.write("timestamp;host_written,media_written;waf\n")
+        waf_file.write(f"{datetime.now()};{start_host},{start_media};0.0000\n")
+
     def run():
-        global RUN_MEASUREMENT
-        os.system("sync")
+        previous_host_written, previous_media_written = start_host, start_media
 
-        previous_host_written, previous_media_written = device.get_written_bytes()
+        while RUN_MEASUREMENT:
+            for _ in range(600): # 10 Minute interval
+                if not RUN_MEASUREMENT: return
+                time.sleep(1)
 
-        with open(file_name, "w+", newline="\n") as waf_file:
-            while RUN_MEASUREMENT:
-                time.sleep(600)  # 10 minutes interval
-                os.system("sync")
+            # Calculate the Write Amplification Factor
+            os.system("sync")
+            current_host_written, current_media_written = previous_host_written, previous_media_written
+            diff_host_written = current_host_written - previous_host_written
+            diff_media_written = current_media_written - previous_media_written
+            waf = calculate_waf(diff_host_written, diff_media_written)
 
-                host_written, media_written = device.get_written_bytes()
-                if host_written == 0:
-                    continue
+            with open(file_name, "w", newline="\n") as waf_file:
+                waf_file.write(f"{datetime.now()};{diff_host_written},{diff_media_written};{waf:.4f}\n")
 
-                # Calculate the Write Amplification Factor
-                diff_host_written = host_written - previous_host_written
-                diff_media_written = media_written - previous_media_written
-                waf = calculate_waf(diff_host_written, diff_media_written)
-
-                waf_file.write(f"{datetime.now()};{diff_host_written},{diff_media_written};{waf}\n")
-                waf_file.flush()
-                os.fsync(waf_file.fileno())
-
-                previous_host_written = host_written
-                previous_media_written = media_written
+            previous_host_written = current_host_written
+            previous_media_written = current_media_written
 
         print("WAF measurement complete")
 
@@ -111,6 +114,15 @@ def start_device_measurements(device: NvmeDevice, file_name: str):
         RUN_MEASUREMENT = False
         waf_measurement_thread.join()
 
+        os.system("sync")
+        end_host_written, end_media_written = device.get_written_bytes()
+        total_diff_host = end_host_written - start_host
+        total_diff_media = end_media_written - start_media
+        waf = calculate_waf(total_diff_host, total_diff_media)
+
+        with open(file_name, "a", newline="\n") as waf_file:
+            waf_file.write(f"{datetime.now()};{total_diff_host},{total_diff_media};{waf:.4f}\n")
+
     return stop_measurement
 
 def generate_filenames(args: Arguments) -> tuple[str, str]:
@@ -122,7 +134,13 @@ def generate_filenames(args: Arguments) -> tuple[str, str]:
 
     name = f"{args.benchmark}-{duration_display}-{device_name}-mem{args.buffer_manager_mem_size}-{args.io_backend}-sf{args.scale_factor}-t{args.threads}-{parallel}-{fdp_name}"
 
-    return f"{name}.csv", f"{name}-device.csv"
+    target_dir = os.path.join("results", args.benchmark)
+    os.makedirs(target_dir, exist_ok=True)
+
+    output_file = os.path.join(target_dir, f"{name}.csv")
+    device_output_file = os.path.join(target_dir, f"{name}-device.csv")
+
+    return output_file, device_output_file
 
 if __name__ == "__main__":
     args: Arguments = Arguments.parse_args()
