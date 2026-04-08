@@ -182,6 +182,7 @@ class NvmeDevice:
         if is_mounted:
             time.sleep(10) 
             run_cmd(f"mkfs.ext4 {new_namespace.get_device_path()} -b {self.block_size} {ns_number_of_blocks}") 
+            os.makedirs(mount_path, exist_ok=True)
             run_cmd(f"mount {new_namespace.get_device_path()} {mount_path}")
         
         return new_namespace
