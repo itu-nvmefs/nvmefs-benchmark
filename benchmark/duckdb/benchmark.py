@@ -65,7 +65,7 @@ def run_concurrent_benchmark(num_threads: int, benchmark_runner, db: database.Da
 # Global flag for WAF measurement thread
 RUN_MEASUREMENT = True
 
-def start_device_measurements(device: NvmeDevice, file_name: str):
+def start_device_measurements(device: NvmeDevice, file_name: str, enable_fdp: bool):
     """
     Starts a background thread to measure device-level Write Amplification Factor (WAF)
     Returns a function to stop measurement
@@ -75,14 +75,21 @@ def start_device_measurements(device: NvmeDevice, file_name: str):
     RUN_MEASUREMENT = True
 
     os.system("sync")
+
     start_host, start_media = device.get_written_bytes()
+    start_fdp_host, start_fdp_media = device.get_written_bytes_fdp() if enable_fdp else (0,0)
 
     with open(file_name, "w", newline="\n") as waf_file:
-        waf_file.write("timestamp;host_written,media_written;waf\n")
-        waf_file.write(f"{datetime.now()};{start_host},{start_media};0.0000\n")
+        waf_file.write("timestamp;source;host_written,media_written;waf\n")
+
+        timestamp = datetime.now()
+        waf_file.write(f"{timestamp};smart-log;{start_host},{start_media};0.0000\n")
+        if enable_fdp:
+            waf_file.write(f"{datetime.now()};fdp-stats;{start_fdp_host},{start_fdp_media};0.0000\n")
 
     def run():
         previous_host_written, previous_media_written = start_host, start_media
+        previous_fdp_host, previous_fdp_media = start_fdp_host, start_fdp_media
 
         while RUN_MEASUREMENT:
             for _ in range(600): # 10 Minute interval
@@ -91,16 +98,32 @@ def start_device_measurements(device: NvmeDevice, file_name: str):
 
             # Calculate the Write Amplification Factor
             os.system("sync")
-            current_host_written, current_media_written = previous_host_written, previous_media_written
+            timestamp = datetime.now()
+
+            # Smart Logs
+            current_host_written, current_media_written = device.get_written_bytes()
             diff_host_written = current_host_written - previous_host_written
             diff_media_written = current_media_written - previous_media_written
             waf = calculate_waf(diff_host_written, diff_media_written)
 
-            with open(file_name, "w", newline="\n") as waf_file:
-                waf_file.write(f"{datetime.now()};{diff_host_written},{diff_media_written};{waf:.4f}\n")
+            with open(file_name, "a", newline="\n") as waf_file:
+                waf_file.write(f"{timestamp};smart-log;{diff_host_written},{diff_media_written};{waf:.4f}\n")
 
             previous_host_written = current_host_written
             previous_media_written = current_media_written
+
+            # FDP Stats
+            if enable_fdp:
+                current_fdp_host, current_fdp_media = device.get_written_bytes_fdp()
+                diff_host_fdp = current_fdp_host - previous_fdp_host
+                diff_media_fdp = current_fdp_media - previous_fdp_media
+                fdp_waf = calculate_waf(diff_host_fdp, diff_media_fdp)
+
+                with open(file_name, "a", newline="\n") as waf_file:
+                    waf_file.write(f"{timestamp};fdp-stats;{diff_host_fdp},{diff_media_fdp};{fdp_waf:.4f}\n")
+
+                previous_fdp_host = current_fdp_host
+                previous_fdp_media = current_fdp_media
 
         print("WAF measurement complete")
 
@@ -115,13 +138,26 @@ def start_device_measurements(device: NvmeDevice, file_name: str):
         waf_measurement_thread.join()
 
         os.system("sync")
+        timestamp = datetime.now()
+
+        # Smart log
         end_host_written, end_media_written = device.get_written_bytes()
         total_diff_host = end_host_written - start_host
         total_diff_media = end_media_written - start_media
         waf = calculate_waf(total_diff_host, total_diff_media)
 
         with open(file_name, "a", newline="\n") as waf_file:
-            waf_file.write(f"{datetime.now()};{total_diff_host},{total_diff_media};{waf:.4f}\n")
+            waf_file.write(f"{timestamp};smart-log;{total_diff_host},{total_diff_media};{waf:.4f}\n")
+
+        # FDP Stats
+        if enable_fdp:
+            end_fdp_host, end_fdp_media = device.get_written_bytes_fdp()
+            total_fdp_host = end_fdp_host - start_fdp_host
+            total_fdp_media = end_fdp_media - start_fdp_media
+            fdp_waf = calculate_waf(total_fdp_host, total_fdp_media)
+
+            with open(file_name, "a", newline="\n") as waf_file:
+                waf_file.write(f"{timestamp};fdp-stats;{total_fdp_host},{total_fdp_media};{fdp_waf:.4f}\n")
 
     return stop_measurement
 
@@ -163,7 +199,7 @@ if __name__ == "__main__":
     metric_results = []
 
     # Run the benchmark
-    stop_measurement = start_device_measurements(device, device_output_file)
+    stop_measurement = start_device_measurements(device, device_output_file, enable_fdp=args.use_fdp)
 
     if args.parallel > 0:
         print(f"Running benchmark with {args.parallel} parallel executions")

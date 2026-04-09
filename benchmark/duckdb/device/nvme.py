@@ -2,6 +2,7 @@ import pathlib
 import subprocess
 import time
 import re
+import os
 
 def run_cmd(cmd: str):
     subprocess.run(cmd, shell=True, check=True)
@@ -176,8 +177,13 @@ class NvmeDevice:
 
         if precondition:
             print(f"Preconditioning {new_namespace.get_device_path()}...")
-            run_cmd(
-                f"fio --name=precondition --filename={new_namespace.get_device_path()} --rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio --size=100%")
+
+            if enable_fdp: # FDP-Aware preconditioning
+                fio_cmd = f"fio --name=precondition --filename={new_namespace.get_generic_device_path()} --rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=io_uring_cmd --cmd_type=nvme --fdp=1 --fdp_pli=0 --size=100%"
+            else:
+                # Opaque Preconditioning (for Baseline/No-FDP runs)
+                fio_cmd = f"fio --name=precondition --filename={new_namespace.get_device_path()} --rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio --size=100%"
+            run_cmd(fio_cmd)
 
         if is_mounted:
             time.sleep(10) 
@@ -200,6 +206,16 @@ class NvmeDevice:
 
         m_out = subprocess.check_output(f"nvme ocp smart-add-log {self.device_path}", shell=True, text=True)
         m_match = re.search(r"Physical media units written.+\d+ (\d+)", m_out)
+        media_written = int(m_match.group(1)) if m_match else 0
+
+        return host_written, media_written
+
+    def get_written_bytes_fdp(self, enable_fdp: bool = False, endgrp_id: int = 1):
+        cmd_out = subprocess.check_output(f"nvme fdp stats {self.device_path} -e {endgrp_id}", shell=True, text=True)
+        h_match = re.search(r"Host Bytes with Metadata Written \(HBMW\):+ (\d+)", cmd_out)
+        host_written = int(h_match.group(1)) if h_match else 0
+
+        m_match = re.search(r"Media Bytes with Metadata Written \(MBMW\):+ (\d+)", cmd_out)
         media_written = int(m_match.group(1)) if m_match else 0
 
         return host_written, media_written
