@@ -35,15 +35,15 @@ def prepare_setup_func(args: Arguments) -> SetupFunc:
         return db, device
     
     def setup_normal():
-        normal_db_path = os.path.join(args.mount_path, "bench.db")
-        setup_device(device, namespace_id=args.namespace_id, mount_path=args.mount_path, size_blocks=args.namespace_size)
+        _, mount_path = setup_device(device, namespace_id=args.namespace_id, should_mount=args.should_mount, size_blocks=args.namespace_size)
+        normal_db_path = os.path.join(mount_path, "bench.db")
         db = database.connect(normal_db_path, args.threads, args.buffer_manager_mem_size)
-        temp_dir = os.path.join(args.mount_path, ".tmp")        
+        temp_dir = os.path.join(mount_path, ".tmp")
         db.execute(f"SET temp_directory = '{temp_dir}';")
 
         return db, device
 
-    return setup_nvme if args.mount_path is None else setup_normal
+    return setup_nvme if not args.should_mount else setup_normal
 
 def run_concurrent_benchmark(num_threads: int, benchmark_runner, db: database.Database, span: int):
 
@@ -166,7 +166,7 @@ def generate_filenames(args: Arguments) -> tuple[str, str]:
     duration_display = f"dur{args.duration}" if run_with_duration else f"reps{args.repetitions}"
     parallel = f"p{args.parallel}" if args.parallel > 0 else "s"
     fdp_name = args.fdp_strategy if args.use_fdp else "nofdp"
-    device_name = "nvme" if args.mount_path is None else "normal"
+    device_name = "nvme" if not args.should_mount else "normal"
 
     name = f"{args.benchmark}-{duration_display}-{device_name}-mem{args.buffer_manager_mem_size}-{args.io_backend}-sf{args.scale_factor}-t{args.threads}-{parallel}-{fdp_name}"
 

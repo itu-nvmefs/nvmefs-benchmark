@@ -15,7 +15,7 @@ class Arguments:
     fdp_strategy: str = ""
     use_generic_device: bool = False
     benchmark: str = ""
-    mount_path: str = None
+    should_mount: bool = False
     input_dir: str = "./"
     sensor_batch_size: int = 100
     namespace_id: int = 1
@@ -69,8 +69,8 @@ class Arguments:
                             choices=["baseline", "temp-isolated", "wal-isolated", "fully-isolated"],
                             help="FDP placement strategy to use")
 
-        parser.add_argument("-mp", "--mount_path", type=str, default=None,
-                            help="Mount path for normal file system tests")
+        parser.add_argument("--mount", action="store_true", default=False,
+                            help="Whether the block device should be mounted using udisks2")
 
         parser.add_argument("-i", "--input_directory", type=str, default="./",
                             help="Input directory for data files")
@@ -106,7 +106,7 @@ class Arguments:
             fdp_strategy=args.fdp_strategy,
             use_generic_device=args.generic_device,
             benchmark=args.benchmark,
-            mount_path=args.mount_path,
+            should_mount=args.mount,
             input_dir=args.input_directory,
             threads=args.threads,
             parallel=args.parallel,
