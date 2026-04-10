@@ -3,6 +3,7 @@ import subprocess
 import time
 import re
 import os
+from typing import Any 
 
 def run_cmd(cmd: str):
     completed_process = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
@@ -172,7 +173,8 @@ class NvmeDevice:
         run_cmd(f"nvme attach-ns {self.device_path} --namespace-id={namespace_id} --controllers=0x7")
         run_cmd(f"nvme ns-rescan {self.device_path}")
         
-
+        new_namespace = NvmeDeviceNamespace(self.device_path, namespace_id, ns_number_of_blocks, is_mounted=False)
+        
         if precondition:
             print(f"Preconditioning {new_namespace.get_device_path()}...")
 
@@ -183,19 +185,23 @@ class NvmeDevice:
                 fio_cmd = f"fio --name=precondition --filename={new_namespace.get_device_path()} --rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio --size=100%"
             run_cmd(fio_cmd)
 
-        is_mounted = False
         mount_path = None
 
         if should_mount:
             time.sleep(10) 
             device_path = new_namespace.get_device_path()
-            run_cmd(f"mkfs.ext4 {device_path}")
+
+            uid = os.getuid()
+            gid = os.getgid()
+            run_cmd(f"mkfs.ext4 -E root_owner={uid}:{gid} {device_path}")
+            run_cmd(f"udevadm settle")
+            
             mount_output = run_cmd(f"udisksctl mount -b {device_path} --no-user-interaction")
             match = re.search(r"^Mounted \/dev\/nvme\dn\d at (\/run\/media\/itu\/[a-f\d-]+)", mount_output)
             if match is not None:
                 mount_path = match.group(1)
+                new_namespace.is_mounted = True
         
-        new_namespace = NvmeDeviceNamespace(self.device_path, namespace_id, ns_number_of_blocks, is_mounted)
         self.namespaces.append(new_namespace)
         return new_namespace, mount_path
 
@@ -243,7 +249,8 @@ def calculate_waf(host_written_bytes, media_written_bytes):
     return media_written_bytes / host_written_bytes
 
 def setup_device(device: NvmeDevice, namespace_id: int = 1, enable_fdp: bool = False, should_mount: bool = False,
-                 endgrp_id: int = 1, size_blocks: int = 0, precondition: bool = False) -> tuple[NvmeDeviceNamespace, str | Any | None]:
+                 endgrp_id: int = 1, size_blocks: int = 0, precondition: bool = False) -> tuple[NvmeDeviceNamespace, str
+                                                                                                | Any | None]:
     """
     Sets up the device by creating a namespace and enabling FDP if required
     """
