@@ -1,5 +1,5 @@
 #!/bin/bash
-DURATION=60
+DURATION=1
 REPETITIONS=6
 DEVICE="/dev/nvme0"
 INPUT_DIR="/mnt/data/benchmark/"
@@ -16,7 +16,7 @@ FDP_STRATEGIES=("baseline" "temp-isolated" "wal-isolated" "fully-isolated")
 ###################################
 # YCSB
 ###################################
-YCSB_SIZES=(1 10) # SF10 = 1M Rows
+YCSB_SIZES=(1) # SF10 = 1M Rows
 YCSB_THREADS=16
 YCSB_ENGINE_PATH="runner/ycsb_lib/build_engine.sh"
 
@@ -33,7 +33,6 @@ for strategy in "${FDP_STRATEGIES[@]}"; do
     done
 done
 
-: '
 # NVMe io_uring_cmd without FDP
 for sf in "${YCSB_SIZES[@]}"; do
     echo "Running YCSB No-FDP - Scale Factor: $sf"
@@ -45,8 +44,9 @@ for sf in "${YCSB_SIZES[@]}"; do
     echo "Running YCSB Baseline - Scale Factor: $sf"
     python3 benchmark.py ycsb --duration $DURATION --mount --device_path $DEVICE --input_directory $INPUT_DIR --memory_limit 20000 --sf $sf --threads $YCSB_THREADS --namespace_size $XL_SIZE_PRECONDITION --precondition
 done
-'
+
 echo "Finished YCSB benchmark"
+
 : '
 ###################################
 # TPCH

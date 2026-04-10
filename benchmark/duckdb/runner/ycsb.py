@@ -18,11 +18,19 @@ def run_ycsb_epoch_benchmark(db, scale_factor: int):
     row_count = scale_factor * 100000
 
     if runner is None:
+        use_nvmefs = db.db_path.startswith("nvmefs://") # Determine whether we are using nvmefs extension
+        dev_path = getattr(db, "device_path", "")
+        backend = getattr(db, "backend", "")
+
+        use_fdp = getattr(db, "use_fdp", False)
+        fdp_map = db.config.get_fdp_mapping() if use_fdp else ""
+
         runner = ycsb_engine.YCSBRunner(
             db.db_path,
-            db.device_path,
-            db.backend,
-            db.config.get_fdp_mapping() if db.use_fdp else ""
+            dev_path,
+            backend,
+            fdp_map,
+            use_nvmefs
         )
 
     total_time_ms = runner.run(iterations, row_count)
