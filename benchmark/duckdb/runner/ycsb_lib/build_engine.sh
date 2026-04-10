@@ -21,7 +21,7 @@ echo "Using DuckDB Library: $DUCKDB_LIB_PATH"
 OUTPUT_NAME="$SCRIPT_DIR/ycsb_engine.so"
 
 # 5. Compile
-g++ -O3 -shared -std=c++11 -fPIC \
+g++ -O3 -shared -std=c++17 -fPIC \
     $(python3 -m pybind11 --includes) \
     -I"$DUCKDB_INC" \
     -I"$SCRIPT_DIR" \
