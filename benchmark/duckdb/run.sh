@@ -18,6 +18,11 @@ FDP_STRATEGIES=("baseline" "temp-isolated" "wal-isolated" "fully-isolated")
 ###################################
 YCSB_SIZES=(1 10) # SF10 = 1M Rows
 YCSB_THREADS=16
+YCSB_ENGINE_PATH="runner/ycsb_lib/build_engine.sh"
+
+echo "Building YCSB Engine..."
+./$YCSB_ENGINE_PATH || { echo "Building failed. Aborting."; exit 1; }
+echo "YCSB Engine built successfully."
 
 echo "Starting YCSB Benchmarks..."
 # NVMe io_uring_cmd with FDP enabled (all 4 strategies)
@@ -27,7 +32,8 @@ for strategy in "${FDP_STRATEGIES[@]}"; do
         python3 benchmark.py ycsb --duration $DURATION --input_directory $INPUT_DIR --device_path $DEVICE --generic_device --backend "io_uring_cmd" --memory_limit 20000 --sf $sf --threads $YCSB_THREADS --fdp --fdp_strategy $strategy --namespace_size $XL_SIZE_PRECONDITION --precondition
     done
 done
-:'
+
+: '
 # NVMe io_uring_cmd without FDP
 for sf in "${YCSB_SIZES[@]}"; do
     echo "Running YCSB No-FDP - Scale Factor: $sf"
@@ -41,7 +47,7 @@ for sf in "${YCSB_SIZES[@]}"; do
 done
 '
 echo "Finished YCSB benchmark"
-:'
+: '
 ###################################
 # TPCH
 ###################################
@@ -62,7 +68,7 @@ done
 
 echo "Finished TPCH benchmark"
 '
-:'
+: '
 # Baseline
 for sf in "${TPCH_SIZES[@]}"; do
     echo "Running TPCH Baseline - Scale Factor: $sf"
