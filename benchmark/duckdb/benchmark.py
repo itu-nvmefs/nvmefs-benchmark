@@ -35,7 +35,7 @@ def prepare_setup_func(args: Arguments) -> SetupFunc:
         return db, device
     
     def setup_normal():
-        _, mount_path = setup_device(device, namespace_id=args.namespace_id, should_mount=args.should_mount, size_blocks=args.namespace_size)
+        _, mount_path = setup_device(device, namespace_id=args.namespace_id, should_mount=args.should_mount, size_blocks=args.namespace_size, precondition=args.precondition)
         normal_db_path = os.path.join(mount_path, "bench.db")
         db = database.connect(normal_db_path, args.threads, args.buffer_manager_mem_size)
         temp_dir = os.path.join(mount_path, ".tmp")

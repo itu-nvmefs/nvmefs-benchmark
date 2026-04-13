@@ -259,6 +259,7 @@ def setup_device(device: NvmeDevice, namespace_id: int = 1, enable_fdp: bool = F
     device_ns_path = pathlib.Path(f"{device.device_path}n{namespace_id}")
 
     if device_ns_path.exists():
+        subprocess.run(f"umount -l {device_ns_path}", shell=True, stderr=subprocess.DEVNULL)
         device.deallocate_nsid(namespace_id)
         device.delete_namespace_nsid(namespace_id)
 
