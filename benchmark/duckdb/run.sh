@@ -1,6 +1,8 @@
 #!/bin/bash
-DURATION=1
+DURATION=60
 REPETITIONS=6
+MEMORY_LIMIT=200000
+
 DEVICE="/dev/nvme0"
 INPUT_DIR="/mnt/data/benchmark/"
 
@@ -13,10 +15,16 @@ FDP_STRATEGIES=("baseline" "temp-isolated" "wal-isolated" "fully-isolated")
 
 # source ./init.sh
 
+SUITE_START_TIMESTAMP=$(date +%s)
+SUITE_START_STR=$(date '+%Y-%m-%d %H:%M:%S')
+
+
 ###################################
 # YCSB
 ###################################
-YCSB_SIZES=(1) # SF10 = 1M Rows
+
+: '
+YCSB_SIZES=(100) # SF10 = 1M Rows
 YCSB_THREADS=16
 YCSB_ENGINE_PATH="runner/ycsb_lib/build_engine.sh"
 
@@ -29,54 +37,70 @@ echo "Starting YCSB Benchmarks..."
 for strategy in "${FDP_STRATEGIES[@]}"; do
     for sf in "${YCSB_SIZES[@]}"; do
         echo "Running YCSB FDP ($strategy) - Scale Factor: $sf"
-        python3 benchmark.py ycsb --duration $DURATION --input_directory $INPUT_DIR --device_path $DEVICE --generic_device --backend "io_uring_cmd" --memory_limit 20000 --sf $sf --threads $YCSB_THREADS --fdp --fdp_strategy $strategy --namespace_size $XL_SIZE_PRECONDITION --precondition
+        python3 benchmark.py ycsb --duration $DURATION --input_directory $INPUT_DIR --device_path $DEVICE --generic_device --backend "io_uring_cmd" --memory_limit $MEMORY_LIMIT --sf $sf --threads $YCSB_THREADS --fdp --fdp_strategy $strategy --namespace_size $XL_SIZE_PRECONDITION --precondition
     done
 done
 
 # NVMe io_uring_cmd without FDP
 for sf in "${YCSB_SIZES[@]}"; do
     echo "Running YCSB No-FDP - Scale Factor: $sf"
-    python3 benchmark.py ycsb --duration $DURATION --input_directory $INPUT_DIR --device_path $DEVICE --generic_device --backend "io_uring_cmd" --memory_limit 20000 --sf $sf --threads $YCSB_THREADS --namespace_size $XL_SIZE_PRECONDITION --precondition
+    python3 benchmark.py ycsb --duration $DURATION --input_directory $INPUT_DIR --device_path $DEVICE --generic_device --backend "io_uring_cmd" --memory_limit $MEMORY_LIMIT --sf $sf --threads $YCSB_THREADS --namespace_size $XL_SIZE_PRECONDITION --precondition
 done
 
 #Baseline 
 for sf in "${YCSB_SIZES[@]}"; do
     echo "Running YCSB Baseline - Scale Factor: $sf"
-    python3 benchmark.py ycsb --duration $DURATION --mount --device_path $DEVICE --input_directory $INPUT_DIR --memory_limit 20000 --sf $sf --threads $YCSB_THREADS --namespace_size $XL_SIZE_PRECONDITION --precondition
+    python3 benchmark.py ycsb --duration $DURATION --mount --device_path $DEVICE --input_directory $INPUT_DIR --memory_limit $MEMORY_LIMIT --sf $sf --threads $YCSB_THREADS --namespace_size $XL_SIZE_PRECONDITION --precondition
 done
 
 echo "Finished YCSB benchmark"
 
-: '
 ###################################
 # TPCH
 ###################################
-TPCH_SIZES=(1 10 100) # 100 1000)
+'
+TPCH_SIZES=(1000) 
+
+: '
 # NVMe io_uring_cmd with FDP enabled (all 4 strategies)
 for strategy in "${FDP_STRATEGIES[@]}"; do
     for sf in "${TPCH_SIZES[@]}"; do
         echo "Running TPCH FDP ($strategy) - Scale Factor: $sf"
-        python3 benchmark.py tpch --repetitions $REPETITIONS --input_directory $INPUT_DIR --device_path $DEVICE --generic_device --backend "io_uring_cmd" --memory_limit 20000 --sf $sf --threads 16 --fdp --fdp_strategy $strategy --namespace_size $XL_SIZE_PRECONDITION --precondition
+        python3 benchmark.py tpch --repetitions $REPETITIONS --input_directory $INPUT_DIR --device_path $DEVICE --generic_device --backend "io_uring_cmd" --memory_limit $MEMORY_LIMIT --sf $sf --threads 16 --fdp --fdp_strategy $strategy --namespace_size $XL_SIZE_PRECONDITION --precondition
     done
 done
 
 # NVMe io_uring_cmd without FDP
 for sf in "${TPCH_SIZES[@]}"; do
     echo "Running TPCH No-FDP - Scale Factor: $sf"
-    python3 benchmark.py tpch --repetitions $REPETITIONS --input_directory $INPUT_DIR --device_path $DEVICE --generic_device --backend "io_uring_cmd" --memory_limit 20000 --sf $sf --threads 16 --namespace_size $XL_SIZE_PRECONDITION --precondition
+    python3 benchmark.py tpch --repetitions $REPETITIONS --input_directory $INPUT_DIR --device_path $DEVICE --generic_device --backend "io_uring_cmd" --memory_limit $MEMORY_LIMIT --sf $sf --threads 16 --namespace_size $XL_SIZE_PRECONDITION --precondition
 done
 
-echo "Finished TPCH benchmark"
 '
-: '
+
 # Baseline
 for sf in "${TPCH_SIZES[@]}"; do
     echo "Running TPCH Baseline - Scale Factor: $sf"
-    python3 benchmark.py tpch --repetitions $REPETITIONS --mount --device_path $DEVICE --input_directory $INPUT_DIR --memory_limit 20000 --sf $sf --threads 16 --namespace_size $XL_SIZE_PRECONDITION --precondition
+    python3 benchmark.py tpch --repetitions $REPETITIONS --mount --device_path $DEVICE --input_directory $INPUT_DIR --memory_limit $MEMORY_LIMIT --sf $sf --threads 16 --namespace_size $XL_SIZE_PRECONDITION --precondition
 done
 
+echo "Finished TPCH benchmark"
+
+SUITE_END_TIMESTAMP=$(date +%s)
+SUITE_END_STR=$(date '+%Y-%m-%d %H:%M:%S')
+ELAPSED=$(( SUITE_END_TIMESTAMP - SUITE_START_TIMESTAMP ))
+
+HOURS=$(( ELAPSED / 3600 ))
+MINUTES=$(( (ELAPSED % 3600) / 60 ))
+SECS=$(( ELAPSED % 60 ))
+
+echo "Benchmark Started at: $SUITE_START_STR; Benchmark Ended at: $SUITE_END_STR"
+printf "Total Elapsed Time: %02d:%02d:%02d\n" $HOURS $MINUTES $SECS
+
+: '
 ###################################
-# Run all out-of-core benchmarks with focus on the individual elasped times
+# Run all out-of-core benchmarks with focus on the individual elasped times:wq
+#
 ###################################
 OOCHA_SIZES=(2 8 32 128)
 
