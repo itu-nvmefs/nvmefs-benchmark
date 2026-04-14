@@ -174,7 +174,26 @@ class NvmeDevice:
         run_cmd(f"nvme ns-rescan {self.device_path}")
         
         new_namespace = NvmeDeviceNamespace(self.device_path, namespace_id, ns_number_of_blocks, is_mounted=False)
-        
+
+        mount_path = None
+
+        # Mount
+        if should_mount:
+            time.sleep(10)
+            device_path = new_namespace.get_device_path()
+
+            uid = os.getuid()
+            gid = os.getgid()
+            run_cmd(f"mkfs.ext4 -E root_owner={uid}:{gid} {device_path}")
+            run_cmd(f"udevadm settle")
+
+            mount_output = run_cmd(f"udisksctl mount -b {device_path} --no-user-interaction")
+            match = re.search(r"^Mounted \/dev\/nvme\dn\d at (\/run\/media\/itu\/[a-f\d-]+)", mount_output)
+            if match is not None:
+                mount_path = match.group(1)
+                new_namespace.is_mounted = True
+
+        # Sequential Fill + Random Scramble/Writes
         if precondition:
             print(f"Preconditioning {new_namespace.get_device_path()}...")
 
@@ -185,23 +204,6 @@ class NvmeDevice:
                 fio_cmd = f"fio --name=precondition --filename={new_namespace.get_device_path()} --rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio --size=100%"
             run_cmd(fio_cmd)
 
-        mount_path = None
-
-        if should_mount:
-            time.sleep(10) 
-            device_path = new_namespace.get_device_path()
-
-            uid = os.getuid()
-            gid = os.getgid()
-            run_cmd(f"mkfs.ext4 -E root_owner={uid}:{gid} {device_path}")
-            run_cmd(f"udevadm settle")
-            
-            mount_output = run_cmd(f"udisksctl mount -b {device_path} --no-user-interaction")
-            match = re.search(r"^Mounted \/dev\/nvme\dn\d at (\/run\/media\/itu\/[a-f\d-]+)", mount_output)
-            if match is not None:
-                mount_path = match.group(1)
-                new_namespace.is_mounted = True
-        
         self.namespaces.append(new_namespace)
         return new_namespace, mount_path
 
@@ -255,10 +257,10 @@ def setup_device(device: NvmeDevice, namespace_id: int = 1, enable_fdp: bool = F
     Sets up the device by creating a namespace and enabling FDP if required
     """
 
-    # TODO: Check if unknown namespace is already mounted and unmount before dealocating and delete of ns
     device_ns_path = pathlib.Path(f"{device.device_path}n{namespace_id}")
 
     if device_ns_path.exists():
+        # TODO: Check if unknown namespace is already mounted and unmount before dealocating and delete of ns
         subprocess.run(f"umount -l {device_ns_path}", shell=True, stderr=subprocess.DEVNULL)
         device.deallocate_nsid(namespace_id)
         device.delete_namespace_nsid(namespace_id)
