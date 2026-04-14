@@ -1,4 +1,6 @@
+import csv
 import pathlib
+import statistics
 import subprocess
 import time
 import re
@@ -195,14 +197,24 @@ class NvmeDevice:
 
         # Sequential Fill + Random Scramble/Writes
         if precondition:
-            print(f"Preconditioning {new_namespace.get_device_path()}...")
-
-            if enable_fdp: # FDP-Aware preconditioning
-                fio_cmd = f"fio --name=precondition --filename={new_namespace.get_generic_device_path()} --rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=io_uring_cmd --cmd_type=nvme --fdp=1 --fdp_pli=0 --size=100%"
+            run_cmd("rm -f steadystate_iops.*")
+            
+            if should_mount and mount_path is not None:
+                print(f"Filesystem Preconditioning on {mount_path}...")
+                run_cmd(f"fio --name=seq-fill --directory={mount_path} --rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio --fallocate=none --fill_device=1 --size=100%")
+                run_cmd(f"fio --name=random-writes --directory={mount_path} --rw=randwrite --bs=4k --iodepth=64 --direct=1 --ioengine=libaio --time_based --runtime=1800 --write_iops_log=steadystate --log_avg_msec=1000")
+                run_cmd(f"rm -f {mount_path}/seq-fill.* {mount_path}/random-writes.*")
             else:
-                # Opaque Preconditioning (for Baseline/No-FDP runs)
-                fio_cmd = f"fio --name=precondition --filename={new_namespace.get_device_path()} --rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio --size=100%"
-            run_cmd(fio_cmd)
+                print(f"Preconditioning {new_namespace.get_device_path()}...")
+                target_path = new_namespace.get_generic_device_path() if enable_fdp else new_namespace.get_device_path()
+                if enable_fdp: # FDP-Aware preconditioning
+                    run_cmd(f"fio --name=seq-fill --filename={target_path} --rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=io_uring_cmd --cmd_type=nvme --fdp=1 --fdp_pli=0 --size=100%")
+                    run_cmd(f"fio --name=random-writes --filename={target_path} --rw=randwrite --bs=4k --iodepth=64 --direct=1 --ioengine=io_uring_cmd --cmd_type=nvme --fdp=1 --fdp_pli=0 --time_based --runtime=1800 --write_iops_log=steadystate --log_avg_msec=1000")
+                else:
+                    # Opaque Preconditioning (for Baseline/No-FDP runs)
+                    run_cmd(f"fio --name=seq-fill --filename={target_path} --rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio --size=100%")
+                    run_cmd(
+                        f"fio --name=random-writes --filename={target_path} --rw=randwrite --bs=4k --iodepth=64 --direct=1 --ioengine=libaio --time_based --runtime=1800 --write_iops_log=steadystate --log_avg_msec=1000")
 
         self.namespaces.append(new_namespace)
         return new_namespace, mount_path
@@ -269,6 +281,47 @@ def setup_device(device: NvmeDevice, namespace_id: int = 1, enable_fdp: bool = F
         device.enable_fdp(endgrp_id)
     else:
         device.disable_fdp(endgrp_id)
-    
-    # Create new namespace with a new configuration
-    return device.create_namespace(namespace_id, enable_fdp, should_mount=should_mount, endgrp_id=endgrp_id, size_blocks=size_blocks, precondition=precondition)
+
+    new_namespace, mount_path = device.create_namespace(namespace_id, enable_fdp, should_mount=should_mount, endgrp_id=endgrp_id, size_blocks=size_blocks, precondition=precondition)
+
+    if precondition:
+        verify_steady_state()
+
+    return new_namespace, mount_path
+
+def verify_steady_state(log_file="steadystate_iops.1.log", evaluation_window_seconds=300, max_cv_percent=5.0):
+    """
+    Verifies the steady state of the device
+    Parses fio IOPS log to verify if the NVMe device has reached a steady state
+    """
+    if not os.path.exists(log_file):
+        print(f"Log file {log_file} not found")
+        return
+
+    iops_data = []
+    with open(log_file, "r") as f:
+        reader = csv.reader(f)
+        for row in reader:
+            if len(row) >= 2:
+                try:
+                    iops_data.append(float(row[1].strip()))
+                except ValueError:
+                    continue
+    if len(iops_data) < evaluation_window_seconds:
+        print("Not enough iops data")
+
+    tail_data = iops_data[-evaluation_window_seconds:]
+    mean_iops = statistics.mean(tail_data)
+    std_dev = statistics.stdev(tail_data)
+    cv_percent = (std_dev / mean_iops) * 100 if mean_iops > 0 else float('inf')
+
+    print("\nSteady State:")
+    print(f"Mean IOPS (\u03bc):           {mean_iops:.2f}")
+    print(f"Standard Deviation (\u03c3):  {std_dev:.2f}")
+    print(f"Coefficient of Variance: {cv_percent:.2f}%")
+
+    if cv_percent <= max_cv_percent:
+        print(f"The NVMe Drive is in a steady state")
+    else:
+        print(f"The NVMe Drive is not in a steady state")
+
