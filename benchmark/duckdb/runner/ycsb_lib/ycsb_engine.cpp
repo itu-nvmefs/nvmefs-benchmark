@@ -52,6 +52,8 @@ public:
   }
 
   double run(int iterations, int row_count) {
+    py::gil_scoped_release release;
+
     auto start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < iterations; i++) {
       int key = rand() % row_count;

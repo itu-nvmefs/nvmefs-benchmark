@@ -92,7 +92,7 @@ def start_device_measurements(device: NvmeDevice, file_name: str, enable_fdp: bo
         previous_fdp_host, previous_fdp_media = start_fdp_host, start_fdp_media
 
         while RUN_MEASUREMENT:
-            for _ in range(600): # 10 Minute interval
+            for _ in range(660): # 11 Minute interval
                 if not RUN_MEASUREMENT: return
                 time.sleep(1)
 
@@ -100,7 +100,7 @@ def start_device_measurements(device: NvmeDevice, file_name: str, enable_fdp: bo
             os.system("sync")
             timestamp = datetime.now()
 
-            # Smart Logs
+            # Smart Logs (WAF)
             current_host_written, current_media_written = device.get_written_bytes()
             diff_host_written = current_host_written - previous_host_written
             diff_media_written = current_media_written - previous_media_written
@@ -112,7 +112,7 @@ def start_device_measurements(device: NvmeDevice, file_name: str, enable_fdp: bo
             previous_host_written = current_host_written
             previous_media_written = current_media_written
 
-            # FDP Stats
+            # FDP Stats (WAF)
             if enable_fdp:
                 current_fdp_host, current_fdp_media = device.get_written_bytes_fdp()
                 diff_host_fdp = current_fdp_host - previous_fdp_host

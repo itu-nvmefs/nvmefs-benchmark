@@ -1,6 +1,7 @@
+import json
 import os
-import time
 from database.database import Database
+from benchmark.duckdb.profiler import QueryProfiler
 
 TPCH_BENCHMARK_NAME = "tpch"
 
@@ -20,12 +21,10 @@ def run_tpch_epoch_benchmark(db: Database, scale_factor: int):
     results: list[str] = []
 
     for query_nr in range(1, 22):
-        start = time.perf_counter()
-        db.query(f"PRAGMA tpch({query_nr});")
-        end = time.perf_counter()
+        with QueryProfiler(db, f"tpch-{query_nr}") as profiler:
+            db.query(f"PRAGMA tpch({query_nr});")
 
-        # Get query elapsed time in milliseconds
-        query_elapsed = (end - start) * 1000
-        results.append(f"{query_nr};{query_elapsed}\n")
+        metrics_json = json.dumps(profiler.nvmefs_metrics)
+        results.append(f"{query_nr};{profiler.latency_ms:.2f};{metrics_json}\n")
 
     return results

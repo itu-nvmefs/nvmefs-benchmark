@@ -27,10 +27,11 @@ def create_benchmark_runner(name: str, scale_factor: int, run_with_duration: boo
             while delta < duration_minutes:
                 # Run the benchmark
                 results = benchmark(db, scale_factor)
-
                 consolidated_results.extend(results)
-
                 delta = get_time() - start_time
+
+                time.sleep(1)
+
 
             return consolidated_results
 
