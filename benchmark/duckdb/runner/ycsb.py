@@ -16,7 +16,7 @@ def setup_ycsb_benchmark(db: Database, input_dir_path: str, scale_factor: int):
 
 def run_ycsb_epoch_benchmark(db, scale_factor: int):
     global runner
-    iterations = 50000
+    iterations = 1000000
     row_count = scale_factor * 100000
     use_nvmefs = db.db_path.startswith("nvmefs://")
 
