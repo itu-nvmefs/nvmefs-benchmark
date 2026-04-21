@@ -1,6 +1,6 @@
 import time
 
-from . import benchmark_types, tpch, sensor, ycsb
+from . import benchmark_types, tpch, ycsb
 from .oocha import oocha
 
 
@@ -52,8 +52,6 @@ def create_benchmark_runner(name: str, scale_factor: int, run_with_duration: boo
         return create_runner_function(tpch.run_tpch_epoch_benchmark), tpch.setup_tpch_benchmark 
     elif name == ycsb.YCSB_BENCHMARK_NAME:
         return create_runner_function(ycsb.run_ycsb_epoch_benchmark), ycsb.setup_ycsb_benchmark
-    elif name == sensor.SENSOR_BENCHMARK_NAME:
-        return create_runner_function(sensor.run_sensor_epoch_benchmark), sensor.setup_sensor_benchmark
     elif name == oocha.OOCHA_SPILL_BENCHMARK_NAME:
         return create_runner_function(oocha.run_oocha_spill_epoch_benchmark), oocha.setup_oocha_spill_benchmark
     elif name == oocha.OOCHA_BENCHMARK_NAME:
