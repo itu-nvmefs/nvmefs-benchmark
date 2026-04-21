@@ -159,7 +159,7 @@ class NvmeDatabase(Database):
         extension_path = os.path.abspath(f"/home/itu/nvmefs/build/release/extension/nvmefs/nvmefs.duckdb_extension")
         super()._connect()
         self.install_extension(extension_path)
-        self.add_extension("nvmefs")
+        self.add_extension(extension_path)
 
         secret = f"""CREATE OR REPLACE PERSISTENT SECRET nvmefs (
                              TYPE NVMEFS,
