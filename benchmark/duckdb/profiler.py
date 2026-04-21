@@ -26,7 +26,7 @@ class QueryProfiler:
         end_metrics = self._get_nvmefs_metrics()
 
         for key, end_value in end_metrics.items():
-            if isinstance(end_value, int):
+            if isinstance(end_value, int) and key.startswith("total_"):
                 start_value = self.start_metrics.get(key, 0)
                 self.nvmefs_metrics[key] = end_value - start_value
             else:
@@ -41,6 +41,6 @@ class QueryProfiler:
             res_metrics = self.db.execute("SELECT * FROM print_nvmefs_metrics()").fetchall()
             for row in res_metrics:
                 metrics[row[0]] = int(row[1])
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"{self.query_name}: print_nvmefs_metrics() error -> {e}")
         return metrics

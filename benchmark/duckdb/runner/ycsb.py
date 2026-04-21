@@ -2,8 +2,7 @@ import os
 import json
 from .ycsb_lib import ycsb_engine
 from database.database import Database
-
-from ..profiler import QueryProfiler
+from profiler import QueryProfiler
 
 YCSB_BENCHMARK_NAME = "ycsb"
 runner = None # YCSB Engine
