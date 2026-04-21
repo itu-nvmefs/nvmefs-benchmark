@@ -18,7 +18,7 @@ def prepare_setup_func(args: Arguments) -> SetupFunc:
     device = NvmeDevice(args.device) if args.device else None
 
     def setup_nvme():
-        device_namespace, _ = setup_device(device, namespace_id=args.namespace_id, enable_fdp=args.use_fdp, size_blocks=args.namespace_size)
+        device_namespace, _ = setup_device(device, namespace_id=args.namespace_id, enable_fdp=args.use_fdp, size_blocks=args.namespace_size, precondition=args.precondition)
         device_path = device_namespace.get_generic_device_path() if args.use_generic_device else device_namespace.get_device_path()
 
         print(f"Using device path: {device_path}")
