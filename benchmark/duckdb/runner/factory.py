@@ -1,6 +1,6 @@
 import time
 
-from . import benchmark_types, tpch
+from . import benchmark_types, tpch, ycsb
 from .oocha import oocha
 
 
@@ -27,9 +27,7 @@ def create_benchmark_runner(name: str, scale_factor: int, run_with_duration: boo
             while delta < duration_minutes:
                 # Run the benchmark
                 results = benchmark(db, scale_factor)
-
                 consolidated_results.extend(results)
-
                 delta = get_time() - start_time
 
             return consolidated_results
@@ -52,9 +50,11 @@ def create_benchmark_runner(name: str, scale_factor: int, run_with_duration: boo
 
     if name == tpch.TPCH_BENCHMARK_NAME:
         return create_runner_function(tpch.run_tpch_epoch_benchmark), tpch.setup_tpch_benchmark 
+    elif name == ycsb.YCSB_BENCHMARK_NAME:
+        return create_runner_function(ycsb.run_ycsb_epoch_benchmark), ycsb.setup_ycsb_benchmark
     elif name == oocha.OOCHA_SPILL_BENCHMARK_NAME:
         return create_runner_function(oocha.run_oocha_spill_epoch_benchmark), oocha.setup_oocha_spill_benchmark
     elif name == oocha.OOCHA_BENCHMARK_NAME:
         return create_runner_function(oocha.run_oocha_epoch_benchmark), oocha.setup_oocha_benchmark
-    
+
     raise ValueError(f"Unknown benchmark '{name}'")

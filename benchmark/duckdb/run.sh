@@ -1,87 +1,103 @@
 #!/bin/bash
-DURATION=240
+DURATION=60
 REPETITIONS=6
-DEVICE="/dev/nvme1"
-INPUT_DIR="/mnt/duckdb"
-MOUNT="/mnt/itu/duckdb"
+MEMORY_LIMIT=40000
 
-#Max device blocks 91814953
+DEVICE="/dev/nvme0"
+INPUT_DIR="/mnt/data/benchmark/"
 
-M_SIZE_PRECONDITION=826334568 # ~3,38TB, 90% of device
-L_SIZE_PRECONDITION=762064106 # ~3,12TB, 83% of device
-XL_SIZE_PRECONDITION=524288000 # ~2,00TB, 55% of device
+TPCH_SIZES=(1000)
+YCSB_SIZES=(100) # SF10 = 1M Rows
+YCSB_THREADS=16
+YCSB_ENGINE_PATH="runner/ycsb_lib/build_engine.sh"
 
-setup_precondition_ns_fdp() {
+# Max device blocks ~458984375 (1.88 TB / 4096)
+M_SIZE_PRECONDITION=413085937 # ~1.69TB, 90% of device
+L_SIZE_PRECONDITION=380957031 # ~1.56TB, 83% of device
+XL_SIZE_PRECONDITION=252441406 # ~1.03TB, 55% of device
 
-    DEVICE_PATH=$1
-    SIZE=$2
+FDP_STRATEGIES=("baseline" "temp-isolated" "wal-isolated" "fully-isolated")
 
-    sudo nvme set-feature $DEVICE_PATH -f 0x1D -c 1 -s
+# source ./init.sh
 
-    sudo nvme create-ns /dev/nvme1 -b 4096 --nsze=$SIZE --ncap=$SIZE --nphndls=1 --phndls=6
-    sudo nvme attach-ns /dev/nvme1 --namespace-id=1 --controllers=0x7
-}
-
-precondition_device() {
-
-    /home/pinar/.local/fio/fio --filename=/dev/ng1n1 --size="100%" --name fillDevice --rw=write --numjobs=1 --ioengine=io_uring_cmd --iodepth=64 --bs=256k
-}
-
-setup_precondition_ns() {
-    DEVICE_PATH=$1
-    SIZE=$2
-
-    sudo nvme set-feature $DEVICE_PATH -f 0x1D -c 0 -s
-
-    sudo nvme create-ns $DEVICE_PATH -b 4096 --nsze=$SIZE --ncap=$SIZE
-    sudo nvme attach-ns $DEVICE_PATH --namespace-id=1 --controllers=0x7
-
-}
-
-remove_precondition_device() {
-    DEVICE_PATH=$1
-    SIZE=$2
-
-    nvme dsm $DEVICE_PATH --namespace-id=1 --ad -s 0 -b $SIZE
-    nvme delete-ns $DEVICE_PATH --namespace-id=1
-}
-
-source ./init.sh
+SUITE_START_TIMESTAMP=$(date +%s)
+SUITE_START_STR=$(date '+%Y-%m-%d %H:%M:%S')
 
 
 ###################################
-# Run all out-of-core benchmarks with focus on the individual elasped times
+# YCSB
 ###################################
-TPCH_SIZES=(1 10 100 1000)
 
-# nvme io_uring_cmd with fdp
-for sf in "${TPCH_SIZES[@]}"
-do
-    setup_precondition_ns_fdp $DEVICE $XL_SIZE_PRECONDITION
-    python3 benchmark.py -r $REPETITIONS --input_directory $INPUT_DIR --device_path $DEVICE --generic_device -b "io_uring_cmd" -m 20000 --sf $sf -t 16 --fdp tpch
-    remove_precondition_device $DEVICE $XL_SIZE_PRECONDITION
+echo "Building YCSB Engine..."
+./$YCSB_ENGINE_PATH || { echo "Building failed. Aborting."; exit 1; }
+echo "YCSB Engine built successfully."
+
+echo "Starting YCSB Benchmarks..."
+
+# NVMe io_uring_cmd with FDP enabled (all 4 strategies)
+for strategy in "${FDP_STRATEGIES[@]}"; do
+    for sf in "${YCSB_SIZES[@]}"; do
+        echo "Running YCSB FDP ($strategy) - Scale Factor: $sf"
+        python3 benchmark.py ycsb --duration $DURATION --input_directory $INPUT_DIR --device_path $DEVICE --generic_device --backend "io_uring_cmd" --memory_limit $MEMORY_LIMIT --sf $sf --threads $YCSB_THREADS --fdp --fdp_strategy $strategy --namespace_size $M_SIZE_PRECONDITION --precondition
+    done
 done
 
-# nvme io_uring_cmd without fdp
-for sf in "${TPCH_SIZES[@]}"
-do
-    setup_precondition_ns $DEVICE $XL_SIZE_PRECONDITION
-    python3 benchmark.py -r $REPETITIONS --input_directory $INPUT_DIR --device_path $DEVICE --generic_device -b "io_uring_cmd" -m 20000 --sf $sf -t 16 tpch
-    remove_precondition_device $DEVICE $XL_SIZE_PRECONDITION
+# NVMe io_uring_cmd without FDP
+for sf in "${YCSB_SIZES[@]}"; do
+    echo "Running YCSB No-FDP - Scale Factor: $sf"
+    python3 benchmark.py ycsb --duration $DURATION --input_directory $INPUT_DIR --device_path $DEVICE --generic_device --backend "io_uring_cmd" --memory_limit $MEMORY_LIMIT --sf $sf --threads $YCSB_THREADS --namespace_size $M_SIZE_PRECONDITION --precondition
 done
 
-# Base line for the tpch elapsed benchmark
-for sf in "${TPCH_SIZES[@]}"
-do
-    setup_precondition_ns $DEVICE $XL_SIZE_PRECONDITION
-    python3 benchmark.py -r $REPETITIONS --mount_path $MOUNT --device_path $DEVICE --input_directory $INPUT_DIR -m 20000 --sf $sf -t 16 tpch
-    remove_precondition_device $DEVICE $XL_SIZE_PRECONDITION
+#Baseline 
+for sf in "${YCSB_SIZES[@]}"; do
+    echo "Running YCSB Baseline - Scale Factor: $sf"
+    python3 benchmark.py ycsb --duration $DURATION --mount --device_path $DEVICE --input_directory $INPUT_DIR --memory_limit $MEMORY_LIMIT --sf $sf --threads $YCSB_THREADS --namespace_size $M_SIZE_PRECONDITION --precondition
 done
 
+echo "Finished YCSB benchmark"
+
 ###################################
-# Run all out-of-core benchmarks with focus on the individual elasped times
+# TPCH
 ###################################
 
+# NVMe io_uring_cmd with FDP enabled (all 4 strategies)
+for strategy in "${FDP_STRATEGIES[@]}"; do
+    for sf in "${TPCH_SIZES[@]}"; do
+        echo "Running TPCH FDP ($strategy) - Scale Factor: $sf"
+        python3 benchmark.py tpch --repetitions $REPETITIONS --input_directory $INPUT_DIR --device_path $DEVICE --generic_device --backend "io_uring_cmd" --memory_limit $MEMORY_LIMIT --sf $sf --threads 16 --fdp --fdp_strategy $strategy --namespace_size $M_SIZE_PRECONDITION --precondition
+    done
+done
+
+# NVMe io_uring_cmd without FDP
+for sf in "${TPCH_SIZES[@]}"; do
+    echo "Running TPCH No-FDP - Scale Factor: $sf"
+    python3 benchmark.py tpch --repetitions $REPETITIONS --input_directory $INPUT_DIR --device_path $DEVICE --generic_device --backend "io_uring_cmd" --memory_limit $MEMORY_LIMIT --sf $sf --threads 16 --namespace_size $M_SIZE_PRECONDITION --precondition
+done
+
+# Baseline
+for sf in "${TPCH_SIZES[@]}"; do
+    echo "Running TPCH Baseline - Scale Factor: $sf"
+    python3 benchmark.py tpch --repetitions $REPETITIONS --mount --device_path $DEVICE --input_directory $INPUT_DIR --memory_limit $MEMORY_LIMIT --sf $sf --threads 16 --namespace_size $M_SIZE_PRECONDITION --precondition
+done
+
+echo "Finished TPCH benchmark"
+
+SUITE_END_TIMESTAMP=$(date +%s)
+SUITE_END_STR=$(date '+%Y-%m-%d %H:%M:%S')
+ELAPSED=$(( SUITE_END_TIMESTAMP - SUITE_START_TIMESTAMP ))
+
+HOURS=$(( ELAPSED / 3600 ))
+MINUTES=$(( (ELAPSED % 3600) / 60 ))
+SECS=$(( ELAPSED % 60 ))
+
+echo "Benchmark Started at: $SUITE_START_STR; Benchmark Ended at: $SUITE_END_STR"
+printf "Total Elapsed Time: %02d:%02d:%02d\n" $HOURS $MINUTES $SECS
+
+: '
+###################################
+# Run all out-of-core benchmarks with focus on the individual elasped times:wq
+#
+###################################
 OOCHA_SIZES=(2 8 32 128)
 
 for sf in "${OOCHA_SIZES[@]}"
@@ -102,7 +118,7 @@ done
 for sf in "${OOCHA_SIZES[@]}"
 do
     setup_precondition_ns $DEVICE $M_SIZE_PRECONDITION
-    python3 benchmark.py -r $REPETITIONS --mount_path $MOUNT --device_path $DEVICE --input_directory $INPUT_DIR -m 20000 --sf $sf -t 16 oocha
+    python3 benchmark.py -r $REPETITIONS --mount --device_path $DEVICE --input_directory $INPUT_DIR -m 20000 --sf $sf -t 16 oocha
     remove_precondition_device $DEVICE $M_SIZE_PRECONDITION
 done
 
@@ -113,13 +129,13 @@ done
 ## normal
 precondition_device $DEVICE $M_SIZE_PRECONDITION
 precondition_device
-python3 benchmark.py -d $DURATION --mount_path $MOUNT --device_path $DEVICE --input_directory $INPUT_DIR -m 20000 --sf 1000 -t 24 oocha-spill
+python3 benchmark.py -d $DURATION --mount --device_path $DEVICE --input_directory $INPUT_DIR -m 20000 --sf 1000 -t 24 oocha-spill
 remove_precondition_device $DEVICE $M_SIZE_PRECONDITION
 
 
 precondition_device $DEVICE $M_SIZE_PRECONDITION
 precondition_device
-python3 benchmark.py -d $DURATION --mount_path $MOUNT --device_path $DEVICE --input_directory $INPUT_DIR -m 40000 --sf 1000 -t 96 -par 4 oocha-spill
+python3 benchmark.py -d $DURATION --mount --device_path $DEVICE --input_directory $INPUT_DIR -m 40000 --sf 1000 -t 96 -par 4 oocha-spill
 remove_precondition_device $DEVICE $M_SIZE_PRECONDITION
 
 # nvme
@@ -142,3 +158,4 @@ setup_precondition_ns_fdp $DEVICE $M_SIZE_PRECONDITION
 precondition_device
 python3 benchmark.py -d $DURATION --input_directory $INPUT_DIR --device_path $DEVICE --generic_device -b "io_uring_cmd" -m 14000 --sf 1000 -t 96 -par 4 oocha-spill
 remove_precondition_device $DEVICE $M_SIZE_PRECONDITION
+'

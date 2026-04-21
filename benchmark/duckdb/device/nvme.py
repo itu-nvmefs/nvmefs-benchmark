@@ -1,64 +1,64 @@
-import os
+import csv
 import pathlib
+import statistics
 import subprocess
-from pathlib import Path
 import time
+import re
+import os
+from typing import Any 
+
+def run_cmd(cmd: str):
+    completed_process = subprocess.run(cmd, shell=True, check=True, capture_output=True, text=True)
+    return completed_process.stdout
 
 class NvmeDeviceNamespace:
-    def __init__(self, device_path: str, dev_path_id: int, namespace_id: int, number_of_blocks: int, log_id: str, sent_offset: list[int], written_offset:list[int], is_mounted: bool = False):
-        self.base_device_path = device_path
+    def __init__(self, device_path: str, namespace_id: int, number_of_blocks: int, is_mounted: bool = False):
+        self.device_path = device_path
         self.namespace_id = namespace_id
-        self.dev_path_id = dev_path_id
         self.is_mounted = is_mounted
-        self.block_size = 4096
-        self.device_id = int(device_path[-1])
-
-        # TODO: Document environment variables in readme
-        self.log_id = log_id
-        self.sent_offset = sent_offset
-        self.written_offset = written_offset
-
         self.number_of_blocks = number_of_blocks
+        self.block_size = 4096
+
+        match = re.search(r'nvme(\d+)', device_path)
+        if not match: raise ValueError(f"Invalid NVMe device path: {device_path}")
+        self.device_id = int(match.group(1))
 
     def delete(self):
         """
         Deletes a namespace on the device. After this is called the namespace is no longer usable
         """
         if self.is_mounted:
-            os.system(f"umount -l {self.get_device_path()}")
-
-        os.system(f"nvme delete-ns {self.base_device_path} --namespace-id={self.namespace_id}")
+            run_cmd(f"umount -l {self.get_device_path()}")
+        run_cmd(f"nvme delete-ns {self.device_path} --namespace-id={self.namespace_id}")
 
     def deallocate_blocks(self):
         """
         Deallocates all blocks on the device
         """
-
-        os.system(f"nvme dsm {self.base_device_path} --namespace-id={self.namespace_id} --ad -s 0 -b {self.number_of_blocks}")
+        run_cmd(f"nvme dsm {self.device_path} --namespace-id={self.namespace_id} --ad --slbs=0 --blocks={self.number_of_blocks}")
     
     def get_generic_device_path(self):
         """
         Returns the generic device path for the namespace
         """
-        return f"/dev/ng{self.device_id}n{self.dev_path_id}"
+        return f"/dev/ng{self.device_id}n{self.namespace_id}"
     
     def get_device_path(self):
         """
         Returns the device path for the namespace
         """
-        return f"/dev/nvme{self.device_id}n{self.dev_path_id}"
-    
+        return f"/dev/nvme{self.device_id}n{self.namespace_id}"
 
     def get_written_bytes(self):
-        cmd = f"""nvme get-log {self.get_device_path()} --log-id={self.log_id} --log-len=512 -b"""
-        res = subprocess.check_output(cmd, shell=True)
-        host_written = int.from_bytes(res[self.sent_offset[0]:self.sent_offset[1]+1], byteorder="little") 
-        media_written = int.from_bytes(res[self.written_offset[0]:self.written_offset[1]+1], byteorder="little") 
+        h_out = subprocess.check_output(f"nvme smart-log {self.device_path}", shell=True, text=True)
+        h_match = re.search(r"Data Units Written.+ (\d+)", h_out)
+        host_written = int(h_match.group(1)) * 512000 if h_match else 0
 
-        if host_written == 0: return (0,0)
+        m_out = subprocess.check_output(f"nvme ocp smart-add-log {self.device_path}", shell=True, text=True)
+        m_match = re.search(r"Physical media units written.+\d+ (\d+)", m_out)
+        media_written = int(m_match.group(1)) if m_match else 0
 
-        return (host_written, media_written)
-    
+        return host_written, media_written
 
 class NvmeDevice:
     """
@@ -67,23 +67,19 @@ class NvmeDevice:
     """
     def __init__(self, device_path: str):
         self.namespaces = []
-        self.base_device_path = device_path
+        self.device_path = device_path
         self.block_size = 4096
-        self.device_id = int(device_path[-1])
 
-        # TODO: Document environment variables in readme
-        self.log_id = os.getenv("LOGIDWAF")
-        self.sent_offset = list(map(int,os.getenv("SENT_OFFSET").split("-")))
-        self.written_offset = list(map(int, os.getenv("WRITTEN_OFFSET").split("-")))
+        match = re.search(r'nvme(\d+)', device_path)
+        if not match:
+            raise ValueError(f"Invalid NVMe device path: {device_path}")
+        self.device_id = int(match.group(1))
 
-        if self.log_id is None :
-            raise Exception("Environment variable LOGIDWAF")
-
-        self.number_of_blocks, self.unallocated_number_of_blocks = self.__get_device_info(device_path)
+        self.number_of_blocks, self.unallocated_number_of_blocks = self.__get_device_info()
     
-    def __get_device_info(self, device_path: str):
-        total_blocks_command = f"nvme id-ctrl {device_path} | grep 'tnvmcap' | sed 's/,//g' | awk -v BS={self.block_size} '{{print $3/BS}}'"
-        unallocated_blocks_command = f"nvme id-ctrl {device_path} | grep 'unvmcap' | sed 's/,//g' | awk -v BS={self.block_size} '{{print $3/BS}}'"
+    def __get_device_info(self):
+        total_blocks_command = f"nvme id-ctrl {self.device_path} | grep 'tnvmcap' | sed 's/,//g' | awk -v BS={self.block_size} '{{print $3/BS}}'"
+        unallocated_blocks_command = f"nvme id-ctrl {self.device_path} | grep 'unvmcap' | sed 's/,//g' | awk -v BS={self.block_size} '{{print $3/BS}}'"
 
         block_output = subprocess.check_output(total_blocks_command, shell=True)
         unallocated_block_output = subprocess.check_output(unallocated_blocks_command, shell=True)
@@ -101,7 +97,7 @@ class NvmeDevice:
             if namespace.namespace_id == namespace_id:
                 return namespace.number_of_blocks
         
-        command = f"nvme id-ns {self.base_device_path} -n {namespace_id} | grep 'nvmcap' | sed 's/,//g' | awk -v BS={self.block_size} '{{print $3/BS}}'"
+        command = f"nvme id-ns {self.device_path} --namespace-id={namespace_id} | grep 'nvmcap' | sed 's/,//g' | awk -v BS={self.block_size} '{{print $3/BS}}'"
         block_output = subprocess.check_output(command, shell=True)
         number_of_blocks = int(block_output) 
 
@@ -111,7 +107,6 @@ class NvmeDevice:
         """
         Deallocates all blocks on the device
         """
-
         namespace.deallocate_blocks()
     
     def deallocate_nsid(self, namespace_id: int):
@@ -124,107 +119,136 @@ class NvmeDevice:
                 return
         
         number_of_blocks = self.get_ns_block_amount(namespace_id)
-        os.system(f"nvme dsm {self.base_device_path} --namespace-id={namespace_id} --ad -s 0 -b {number_of_blocks}")
+        run_cmd(f"nvme dsm {self.device_path}n{namespace_id} --ad --slbs=0 --blocks={number_of_blocks}")
 
 
-    def enable_fdp(self):
+    def enable_fdp(self, endgrp_id: int = 1):
         """
         Enables flexible data placement(FDP) on the device
         """
+        run_cmd(f"nvme fdp feature {self.device_path} --endgrp-id={endgrp_id} --enable-conf-idx=0")
 
-        os.system(f"nvme set-feature {self.base_device_path} -f 0x1D -c 1 -s")
-
-    def disable_fdp(self):
+    def disable_fdp(self, endgrp_id: int = 1):
         """
         Disables flexible data placement(FDP) on the device
         """
-        
-        os.system(f"nvme set-feature {self.base_device_path} -f 0x1D -c 0 -s")
+        run_cmd(f"nvme fdp feature {self.device_path} --endgrp-id={endgrp_id} --disable")
 
     def delete_namespace(self, namespace: NvmeDeviceNamespace):
         """
         Deletes a namespace on the device
         """
-
         namespace.delete()
-    
+
     def delete_namespace_nsid(self, namespace_id: int):
         """
         Deletes a namespace on the device
         """
-
         for namespace in self.namespaces:
             if namespace.namespace_id == namespace_id:
                 namespace.delete()
                 return
         
-        os.system(f"nvme delete-ns {self.base_device_path} --namespace-id={namespace_id}")
+        run_cmd(f"nvme delete-ns {self.device_path} --namespace-id={namespace_id}")
 
-    def create_namespace(self, device_path: str, namespace_id: int, enable_fdp: bool = False, mount_path:str = None):
+    def create_namespace(self, namespace_id: int, enable_fdp: bool = False, should_mount: bool = False, endgrp_id: int = 1, size_blocks: int = 0, precondition: bool = False):
         """
         Creates a namespace on the device and attaches it
 
-        :param device_path: The path to the device
         :param namespace_id: The ID of the namespace to create
         :param enable_fdp: Whether to enable flexible data placement
+        :param should_mount: Whether to mount the namespace
+        :param endgrp_id: The ID of the endurance group on the device
+        :param size_blocks: The number of blocks to allocate on the device
+        :param precondition: Whether to sequentially fill the device to ensure a consistent state
         """
 
         # Create a namespace on the device
-        result = 1
-        ns_number_of_blocks = self.unallocated_number_of_blocks
-        
+        ns_number_of_blocks = size_blocks if size_blocks > 0 else self.unallocated_number_of_blocks
         print(f"Creating namespace {namespace_id} with {ns_number_of_blocks} blocks")
+        
         if enable_fdp:
-            result = os.system(f"nvme create-ns {device_path} -b {self.block_size} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks} --nphndls=6 --phndls=0,1,2,3,4,5")
+            run_cmd(f"nvme create-ns {self.device_path} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks} --flbas=0 --endg-id={endgrp_id} --nphndls=4 --phndls=0,1,2,3")
         else: 
-            result = os.system(f"nvme create-ns {device_path} -b {self.block_size} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks}")
+            run_cmd(f"nvme create-ns {self.device_path} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks} --flbas=0")
 
-        if result != 0:
-            raise Exception("Failed to create namespace")
-
-        # Attach the namespace to the device
-        result = os.system(f"nvme attach-ns {device_path} --namespace-id={namespace_id} --controllers=0x7")
-
-        if result != 0:
-            raise Exception("Failed to attach namespace")
+        run_cmd(f"nvme attach-ns {self.device_path} --namespace-id={namespace_id} --controllers=0x7")
+        run_cmd(f"nvme ns-rescan {self.device_path}")
         
-        is_mounted = mount_path is not None
-        new_namespace = NvmeDeviceNamespace(device_path, namespace_id, namespace_id, ns_number_of_blocks, self.log_id, self.sent_offset, self.written_offset, is_mounted)
+        new_namespace = NvmeDeviceNamespace(self.device_path, namespace_id, ns_number_of_blocks, is_mounted=False)
+
+        mount_path = None
+
+        # Mount
+        if should_mount:
+            time.sleep(10)
+            device_path = new_namespace.get_device_path()
+
+            uid = os.getuid()
+            gid = os.getgid()
+            run_cmd(f"mkfs.ext4 -E root_owner={uid}:{gid} {device_path}")
+            run_cmd(f"udevadm settle")
+
+            mount_output = run_cmd(f"udisksctl mount -b {device_path} --no-user-interaction")
+            match = re.search(r"^Mounted \/dev\/nvme\dn\d at (\/run\/media\/itu\/[a-f\d-]+)", mount_output)
+            if match is not None:
+                mount_path = match.group(1)
+                new_namespace.is_mounted = True
+
+        # Sequential Fill + Random Scramble/Writes
+        if precondition:
+            run_cmd("rm -f steadystate_iops.*")
+
+            precondition_path = new_namespace.get_device_path()
+            
+            if should_mount and mount_path is not None:
+                print(f"Filesystem Preconditioning on {mount_path}...")
+                for i in range(4): 
+                    print(f"Preconditioning {i}...")
+                    run_cmd(f"fio --name=seq-fill-{i} --directory={mount_path} --rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio --fallocate=none --fill_device=1 --size=100%")
+                run_cmd(f"fio --name=random-writes --directory={mount_path} --rw=randwrite --bs=4k --iodepth=64 --direct=1 --ioengine=libaio --time_based --runtime=1800 --write_iops_log=steadystate --log_avg_msec=60000")
+                run_cmd(f"rm -f {mount_path}/seq-fill.* {mount_path}/random-writes.*")
+            else:
+                print(f"Preconditioning {precondition_path}...")
+                for i in range(4):
+                    print(f"Preconditioning {i}...")
+                    run_cmd(f"fio --name=seq-fill-{i} --filename={precondition_path} --rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio --size=100%")
+                run_cmd(f"fio --name=random-writes --filename={precondition_path} --rw=randwrite --bs=4k --iodepth=64 --direct=1 --ioengine=libaio --time_based --runtime=1800 --write_iops_log=steadystate --log_avg_msec=60000")
+
         self.namespaces.append(new_namespace)
-
-
-        if is_mounted:
-            time.sleep(10) # Wait for the namespace to be created
-            os.system(f"mkfs.ext4 {new_namespace.get_device_path()} -b {self.block_size} {ns_number_of_blocks}") # Format the device namespace
-            result = os.system(f"mount {new_namespace.get_device_path()} {mount_path}") # Mount the device namespace to a mount path
-
-            if result != 0:
-                raise Exception("Failed to mount namespace")
-        
-        return new_namespace
+        return new_namespace, mount_path
 
     def get_written_bytes_nsid(self, namespace_id: int):
         for namespace in self.namespaces:
             if namespace.namespace_id == namespace_id:
                 return namespace.get_written_bytes()
-
         raise Exception(f"Namespace {namespace_id} not found")
 
     def get_written_bytes(self):
-        cmd = f"""nvme get-log {self.base_device_path} --log-id={self.log_id} --log-len=512 -b"""
-        res = subprocess.check_output(cmd, shell=True)
-        host_written = int.from_bytes(res[self.sent_offset[0]:self.sent_offset[1]+1], byteorder="little") 
-        media_written = int.from_bytes(res[self.written_offset[0]:self.written_offset[1]+1], byteorder="little") 
+        h_out = subprocess.check_output(f"nvme smart-log {self.device_path}", shell=True, text=True)
+        h_match = re.search(r"Data Units Written.+ (\d+)", h_out)
+        host_written = int(h_match.group(1)) * 512000 if h_match else 0
 
-        if host_written == 0: return (0,0)
+        m_out = subprocess.check_output(f"nvme ocp smart-add-log {self.device_path}", shell=True, text=True)
+        m_match = re.search(r"Physical media units written.+\d+ (\d+)", m_out)
+        media_written = int(m_match.group(1)) if m_match else 0
 
-        return (host_written, media_written)
+        return host_written, media_written
+
+    def get_written_bytes_fdp(self, enable_fdp: bool = False, endgrp_id: int = 1):
+        cmd_out = subprocess.check_output(f"nvme fdp stats {self.device_path} -e {endgrp_id}", shell=True, text=True)
+        h_match = re.search(r"Host Bytes with Metadata Written \(HBMW\):+ (\d+)", cmd_out)
+        host_written = int(h_match.group(1)) if h_match else 0
+
+        m_match = re.search(r"Media Bytes with Metadata Written \(MBMW\):+ (\d+)", cmd_out)
+        media_written = int(m_match.group(1)) if m_match else 0
+
+        return host_written, media_written
 
     def reset(self):
         """
         Reset the device by deleting all namespaces and unmounting mounted namespaces
         """
-        
         for namespace in self.namespaces:
             namespace.deallocate_blocks()
             namespace.delete()
@@ -235,26 +259,70 @@ def calculate_waf(host_written_bytes, media_written_bytes):
     """
     if host_written_bytes == 0:
         return 0
-
     return media_written_bytes / host_written_bytes
 
-def setup_device(device: NvmeDevice, namespace_id:int = 1, enable_fdp: bool = False, mount_path: str = None) -> NvmeDeviceNamespace:
+def setup_device(device: NvmeDevice, namespace_id: int = 1, enable_fdp: bool = False, should_mount: bool = False,
+                 endgrp_id: int = 1, size_blocks: int = 0, precondition: bool = False) -> tuple[NvmeDeviceNamespace, str
+                                                                                                | Any | None]:
     """
     Sets up the device by creating a namespace and enabling FDP if required
     """
 
-    # TODO: Check if unknown namespace is already mounted and unmount before dealocating and delete of ns
-    device_ns_path = pathlib.Path(f"{device.base_device_path}n{namespace_id}")
+    device_ns_path = pathlib.Path(f"{device.device_path}n{namespace_id}")
 
     if device_ns_path.exists():
+        # TODO: Check if unknown namespace is already mounted and unmount before dealocating and delete of ns
+        subprocess.run(f"umount -l {device_ns_path}", shell=True, stderr=subprocess.DEVNULL)
         device.deallocate_nsid(namespace_id)
         device.delete_namespace_nsid(namespace_id)
-    
-    # Ensure that FDP is enabled / disabled
-    # if enable_fdp:
-    #     device.enable_fdp()
-    # else:
-    #     device.disable_fdp()
-    
-    # Create new namespace with a new configuration
-    return device.create_namespace(device.base_device_path, namespace_id, enable_fdp, mount_path=mount_path)
+
+    if enable_fdp:
+        device.enable_fdp(endgrp_id)
+    else:
+        device.disable_fdp(endgrp_id)
+
+    new_namespace, mount_path = device.create_namespace(namespace_id, enable_fdp, should_mount=should_mount, endgrp_id=endgrp_id, size_blocks=size_blocks, precondition=precondition)
+
+    if precondition:
+        verify_steady_state()
+
+    return new_namespace, mount_path
+
+def verify_steady_state(log_file="steadystate_iops.1.log", evaluation_window_samples=25, max_cv_percent=5.0):
+    """
+    Verifies the steady state of the device
+    Parses fio IOPS log to verify if the NVMe device has reached a steady state
+    """
+    if not os.path.exists(log_file):
+        print(f"Log file {log_file} not found")
+        return
+
+    iops_data = []
+    with open(log_file, "r") as f:
+        reader = csv.reader(f)
+        for row in reader:
+            if len(row) >= 2:
+                try:
+                    iops_data.append(float(row[1].strip()))
+                except ValueError:
+                    continue
+
+    if len(iops_data) < evaluation_window_samples:
+        print(f"Not enough data: got {len(iops_data)} samples, need {evaluation_window_samples}")
+        return
+
+    tail_data = iops_data[-evaluation_window_samples:]
+    mean_iops = statistics.mean(tail_data)
+    std_dev = statistics.stdev(tail_data)
+    cv_percent = (std_dev / mean_iops) * 100 if mean_iops > 0 else float('inf')
+
+    print("\nSteady State:")
+    print(f"Mean IOPS (μ):           {mean_iops:.2f}")
+    print(f"Standard Deviation:  {std_dev:.2f}")
+    print(f"Coefficient of Variance: {cv_percent:.2f}%")
+
+    if cv_percent <= max_cv_percent:
+        print("The NVMe Drive is in a steady state")
+    else:
+        print("The NVMe Drive is not in a steady state")
+
