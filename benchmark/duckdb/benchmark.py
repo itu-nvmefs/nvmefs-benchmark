@@ -190,7 +190,7 @@ if __name__ == "__main__":
     output_file, device_output_file = generate_filenames(args)
 
     run_with_duration = args.duration > 0
-    run_benchmark, setup_benchmark = create_benchmark_runner(args.benchmark, args.scale_factor, run_with_duration)
+    run_benchmark, setup_benchmark = create_benchmark_runner(args.benchmark, args.scale_factor, run_with_duration, args.checkpoint_mode)
 
     # Setup the database with the correct device config
     db, device = setup_device_and_db()
@@ -212,6 +212,14 @@ if __name__ == "__main__":
 
     # Write the results to a CSV file
     with open(output_file, mode="w", newline="\n") as file:
+        if args.benchmark == "tpch":
+            header = "query_name;latency_ms;nvmefs_metrics\n"
+        elif args.benchmark == "ycsb":
+            header = "workload_name;total_time_ms;throughput_ops;nvmefs_metrics\n"
+        else:
+            header = "name;metrics\n"
+
+        file.write(header)
         for result in metric_results:
             file.write(result)
     

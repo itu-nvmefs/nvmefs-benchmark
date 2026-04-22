@@ -4,7 +4,7 @@ from . import benchmark_types, tpch, ycsb
 from .oocha import oocha
 
 
-def create_benchmark_runner(name: str, scale_factor: int, run_with_duration: bool) -> tuple[benchmark_types.BenchmarkRunnerFunc, benchmark_types.BenchmarkSetupFunc]:
+def create_benchmark_runner(name: str, scale_factor: int, run_with_duration: bool, checkpoint_mode: str = "auto") -> tuple[benchmark_types.BenchmarkRunnerFunc, benchmark_types.BenchmarkSetupFunc]:
 
     def create_runner_function(benchmark: benchmark_types.BenchmarkEpochFunc) -> benchmark_types.BenchmarkRunnerFunc:
         """
@@ -49,9 +49,11 @@ def create_benchmark_runner(name: str, scale_factor: int, run_with_duration: boo
         return duration_wrapper if run_with_duration else repetition_wrapper
 
     if name == tpch.TPCH_BENCHMARK_NAME:
-        return create_runner_function(tpch.run_tpch_epoch_benchmark), tpch.setup_tpch_benchmark 
+        return create_runner_function(tpch.run_tpch_epoch_benchmark), tpch.setup_tpch_benchmark
     elif name == ycsb.YCSB_BENCHMARK_NAME:
-        return create_runner_function(ycsb.run_ycsb_epoch_benchmark), ycsb.setup_ycsb_benchmark
+        ycsb_run = lambda db, sf: ycsb.run_ycsb_epoch_benchmark(db, sf, checkpoint_mode)
+        ycsb_setup = lambda db, input_dir, sf: ycsb.setup_ycsb_benchmark(db, input_dir, sf, checkpoint_mode)
+        return create_runner_function(ycsb_run), ycsb_setup
     elif name == oocha.OOCHA_SPILL_BENCHMARK_NAME:
         return create_runner_function(oocha.run_oocha_spill_epoch_benchmark), oocha.setup_oocha_spill_benchmark
     elif name == oocha.OOCHA_BENCHMARK_NAME:

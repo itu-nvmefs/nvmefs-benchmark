@@ -19,14 +19,16 @@ def setup_tpch_benchmark(db: Database, input_dir_path: str, scale_factor: int):
 
 def run_tpch_epoch_benchmark(db: Database, scale_factor: int):
     results: list[str] = []
-
     use_nvmefs = db.db_path.startswith("nvmefs://")
-
+    
     for query_nr in range(1, 22):
-        with QueryProfiler(db, f"tpch-{query_nr}", use_nvmefs) as profiler:
-            db.query(f"PRAGMA tpch({query_nr});")
+        try: 
+            with QueryProfiler(db, f"tpch-{query_nr}", use_nvmefs) as profiler:
+                db.query(f"PRAGMA tpch({query_nr});")
 
-        metrics_json = json.dumps(profiler.nvmefs_metrics)
-        results.append(f"{query_nr};{profiler.latency_ms:.2f};{metrics_json}\n")
+            metrics_json = json.dumps(profiler.nvmefs_metrics)
+            results.append(f"{query_nr};{profiler.latency_ms:.2f};{metrics_json}\n")
+        except Exception as e:
+            print(f"{query_nr} failed due to {e}")  
 
     return results

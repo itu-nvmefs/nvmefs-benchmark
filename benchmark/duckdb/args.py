@@ -21,6 +21,7 @@ class Arguments:
     namespace_id: int = 1
     namespace_size: int = 0
     precondition: bool = False
+    checkpoint_mode: str = "auto"
     
 
     def valid(self) -> bool:
@@ -92,6 +93,9 @@ class Arguments:
 
         parser.add_argument("--precondition", action="store_true", default=False,
                             help="Execute sequential fill to precondition the SSD before benchmarking")
+        
+        parser.add_argument("--checkpoint_mode", type=str, default="auto", choices=["auto", "manual"],
+                    help="Determines how WAL checkpointing is handled in YCSB")
 
         args = parser.parse_args()
         
@@ -113,7 +117,8 @@ class Arguments:
             sensor_batch_size=args.sensor_batch_size,
             namespace_id=args.namespace_id,
             namespace_size=args.namespace_size,
-            precondition=args.precondition
+            precondition=args.precondition,
+            checkpoint_mode=args.checkpoint_mode
         )
 
         if not arguments.valid():

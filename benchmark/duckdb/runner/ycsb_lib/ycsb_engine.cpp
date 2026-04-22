@@ -2,6 +2,7 @@
 #include <chrono>
 #include <memory>
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 #include <string>
 
 namespace py = pybind11;
@@ -14,7 +15,7 @@ private:
 public:
   YCSBRunner(const std::string db_path, const std::string dev_path,
              const std::string backend, const std::string fdp_map,
-             bool use_nvmefs) {
+             bool use_nvmefs, int memory_limit_mb, const std::string checkpoint_mode) {
 
     duckdb::DBConfig config;
     config.SetOption("allow_unsigned_extensions", true);
@@ -29,7 +30,7 @@ public:
       if (load_res->HasError())
         throw std::runtime_error("Extension Load Failed: " +
                                  load_res->GetError());
-
+      
       std::string secret = "CREATE OR REPLACE PERSISTENT SECRET nvmefs (TYPE "
                            "NVMEFS, nvme_device_path '" +
                            dev_path + "', backend '" + backend + "'";
@@ -40,6 +41,13 @@ public:
       auto sec_res = conn->Query(secret);
       if (sec_res->HasError())
         throw std::runtime_error("Secret Setup Failed: " + sec_res->GetError());
+    }
+
+    conn->Query("PRAGMA memory_limit='" + std::to_string(memory_limit_mb) + "MB';");
+    if (checkpoint_mode == "manual") {
+      conn->Query("PRAGMA wal_autocheckpoint='1TB';");
+    } else {
+      conn->Query("PRAGMA wal_autocheckpoint='16MB';");
     }
 
     auto attach_res = conn->Query("ATTACH DATABASE '" + db_path +
@@ -53,8 +61,8 @@ public:
 
   double run(int iterations, int row_count) {
     py::gil_scoped_release release;
-
     auto start = std::chrono::high_resolution_clock::now();
+
     for (int i = 0; i < iterations; i++) {
       int key = rand() % row_count;
       std::string s_key = "user" + std::to_string(key);
@@ -68,15 +76,28 @@ public:
       }
     }
     auto end = std::chrono::high_resolution_clock::now();
-
     return std::chrono::duration<double, std::milli>(end - start).count();
+  }
+
+  std::map<std::string, int64_t> get_metrics() {
+    std::map<std::string, int64_t> metrics;
+    auto res = conn->Query("SELECT * FROM print_nvmefs_metrics();");
+    
+    if (!res->HasError()) {
+      for (size_t r = 0; r < res->RowCount(); r++) {
+        std::string key = res->GetValue(0, r).ToString();
+        auto val = res->GetValue(1, r);
+        metrics[key] = val.IsNull() ? 0 : val.GetValue<int64_t>();
+      }
+    }
+    return metrics;
   }
 };
 
 // Bind the class to Python
 PYBIND11_MODULE(ycsb_engine, m) {
   py::class_<YCSBRunner>(m, "YCSBRunner")
-      .def(py::init<const std::string &, const std::string &,
-                    const std::string &, const std::string &, bool>())
-      .def("run", &YCSBRunner::run, "Run the native YCSB loop");
+      .def(py::init<const std::string &, const std::string &, const std::string &, const std::string &, bool, int, const std::string &>())
+      .def("run", &YCSBRunner::run)
+      .def("get_metrics", &YCSBRunner::get_metrics); // Bind new method
 }
