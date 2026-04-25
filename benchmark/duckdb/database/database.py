@@ -11,6 +11,7 @@ class ConnectionConfig:
     fdp_strategy: str = ""
     memory: int = 0
     threads: int = 0
+    ns_id: int = 1
 
     def get_fdp_mapping(self) -> str:
         mappings = {
@@ -157,10 +158,10 @@ class NvmeDatabase(Database):
     
     def _setup(self):
         extension_path = os.path.abspath(f"/home/itu/nvmefs/build/release/extension/nvmefs/nvmefs.duckdb_extension")
+
         super()._connect()
         self.install_extension(extension_path)
-        self.add_extension(extension_path)
-
+        self.add_extension(extension_path) 
         secret = f"""CREATE OR REPLACE PERSISTENT SECRET nvmefs (
                              TYPE NVMEFS,
                              nvme_device_path '{self.device_path}',

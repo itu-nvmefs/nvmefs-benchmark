@@ -59,9 +59,11 @@ public:
     conn->Query("USE ycsb_db;");
   }
 
-  double run(int iterations, int row_count) {
+  std::pair<double, int> run(int iterations, int row_count, int duration_seconds) {
     py::gil_scoped_release release;
     auto start = std::chrono::high_resolution_clock::now();
+
+    int actual_iterations = 0;
 
     for (int i = 0; i < iterations; i++) {
       int key = rand() % row_count;
@@ -74,9 +76,23 @@ public:
             "UPDATE usertable SET FIELD0 = 'updated' WHERE YCSB_KEY = '" +
             s_key + "';");
       }
+
+      actual_iterations++;
+
+      // Only check the clock every 10,000 operations to avoid busy wait
+      if (duration_seconds > 0 && (i % 10000 == 0) && i > 0) {
+          auto current = std::chrono::high_resolution_clock::now();
+          auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(current - start).count();
+
+          if (elapsed >= duration_seconds) {
+              break; 
+          }
+      }
     }
     auto end = std::chrono::high_resolution_clock::now();
-    return std::chrono::duration<double, std::milli>(end - start).count();
+    double time_ms = std::chrono::duration<double, std::milli>(end - start).count();
+    
+    return std::make_pair(time_ms, actual_iterations);
   }
 
   std::map<std::string, int64_t> get_metrics() {

@@ -2,46 +2,62 @@ import os
 from threading import Thread
 import time
 from typing import Callable
-from runner.factory import create_benchmark_runner
+
+from runner.factory import create_benchmark_runner, get_namespace_count
 from device.nvme import NvmeDevice, setup_device, calculate_waf
 from database import database
 from datetime import datetime
 import multiprocessing.pool
 from args import Arguments
 
-type SetupFunc = Callable[[], tuple[database.Database,NvmeDevice]]
+type SetupFunc = Callable[[], tuple[list[database.Database],NvmeDevice]]
 
-def prepare_setup_func(args: Arguments) -> SetupFunc:
+def prepare_setup_func(args: Arguments, namespace_count: int = 1) -> SetupFunc:
     """
     Prepare the database configuration and database extensions that are needed depending on the storage device
     """
     device = NvmeDevice(args.device) if args.device else None
 
     def setup_nvme():
-        device_namespace, _ = setup_device(device, namespace_id=args.namespace_id, enable_fdp=args.use_fdp, size_blocks=args.namespace_size, precondition=args.precondition)
-        device_path = device_namespace.get_generic_device_path() if args.use_generic_device else device_namespace.get_device_path()
+        dbs = []
+        namespaces = []
 
-        print(f"Using device path: {device_path}")
+        for ns_id in range(1, namespace_count + 1):
+            device_namespace, _ = setup_device(device, namespace_id=ns_id, enable_fdp=args.use_fdp, size_blocks=args.namespace_size, precondition=args.precondition)
+            namespaces.append(device_namespace)
 
-        config = database.ConnectionConfig(
-            device_path, 
-            args.io_backend, 
-            args.use_fdp,
-            args.fdp_strategy,
-            args.buffer_manager_mem_size,
-            args.threads)
+        time.sleep(5)
 
-        db = database.connect("nvmefs:///bench.db", args.threads, args.buffer_manager_mem_size, config)
-        return db, device
+        for ns_id, device_namespace in enumerate(namespaces, start=1):
+            device_path = device_namespace.get_generic_device_path() if args.use_generic_device else device_namespace.get_device_path()
+            print(f"Using device path: {device_path}")
+
+            config = database.ConnectionConfig(
+                device_path, 
+                args.io_backend, 
+                args.use_fdp,
+                args.fdp_strategy,
+                args.buffer_manager_mem_size,
+                args.threads,
+                ns_id)
+
+            db = database.connect(f"nvmefs:///bench_ns{ns_id}.db", args.threads, args.buffer_manager_mem_size, config)
+            dbs.append(db)
+        return dbs, device
     
     def setup_normal():
-        _, mount_path = setup_device(device, namespace_id=args.namespace_id, should_mount=args.should_mount, size_blocks=args.namespace_size, precondition=args.precondition)
-        normal_db_path = os.path.join(mount_path, "bench.db")
-        db = database.connect(normal_db_path, args.threads, args.buffer_manager_mem_size)
-        temp_dir = os.path.join(mount_path, ".tmp")
-        db.execute(f"SET temp_directory = '{temp_dir}';")
+        dbs = []
+        for ns_id in range(1, namespace_count + 1):
+            _, mount_path = setup_device(device, namespace_id=ns_id, should_mount=args.should_mount, size_blocks=args.namespace_size, precondition=args.precondition)
+            normal_db_path = os.path.join(mount_path, f"bench_ns{ns_id}.db")
 
-        return db, device
+            time.sleep(5)
+
+            db = database.connect(normal_db_path, args.threads, args.buffer_manager_mem_size)
+            temp_dir = os.path.join(mount_path, ".tmp")
+            db.execute(f"SET temp_directory = '{temp_dir}';")
+            dbs.append(db)
+        return dbs, device
 
     return setup_nvme if not args.should_mount else setup_normal
 
@@ -186,16 +202,20 @@ if __name__ == "__main__":
     initial_device = NvmeDevice(args.device)
     initial_device.reset()
 
-    setup_device_and_db = prepare_setup_func(args)
+    initial_device.number_of_blocks, initial_device.unallocated_number_of_blocks = initial_device._NvmeDevice__get_device_info()
+
+    namespace_count = get_namespace_count(args.benchmark)
+
+    setup_device_and_db = prepare_setup_func(args, namespace_count)
     output_file, device_output_file = generate_filenames(args)
 
     run_with_duration = args.duration > 0
     run_benchmark, setup_benchmark = create_benchmark_runner(args.benchmark, args.scale_factor, run_with_duration, args.checkpoint_mode)
 
     # Setup the database with the correct device config
-    db, device = setup_device_and_db()
+    dbs, device = setup_device_and_db()
     print(f"Setting up benchmark using {args.threads} threads and {args.buffer_manager_mem_size} MB of memory")
-    setup_benchmark(db, args.input_dir, args.scale_factor)
+    setup_benchmark(dbs, args.input_dir, args.scale_factor)
     metric_results = []
 
     # Run the benchmark
@@ -203,10 +223,10 @@ if __name__ == "__main__":
 
     if args.parallel > 0:
         print(f"Running benchmark with {args.parallel} parallel executions")
-        metric_results = run_concurrent_benchmark(args.parallel, run_benchmark, db, args.duration if run_with_duration else args.repetitions)
+        metric_results = run_concurrent_benchmark(args.parallel, run_benchmark, dbs, args.duration if run_with_duration else args.repetitions)
     else:
         print(f"Running benchmark with sequential execution")
-        metric_results = run_benchmark(db, args.duration if run_with_duration else args.repetitions) 
+        metric_results = run_benchmark(dbs, args.duration if run_with_duration else args.repetitions) 
 
     stop_measurement()
 
@@ -216,6 +236,8 @@ if __name__ == "__main__":
             header = "query_name;latency_ms;nvmefs_metrics\n"
         elif args.benchmark == "ycsb":
             header = "workload_name;total_time_ms;throughput_ops;nvmefs_metrics\n"
+        elif args.benchmark == "htap":
+            header = "benchmark;task_name;time_ms;throughput;nvmefs_metrics\n"
         else:
             header = "name;metrics\n"
 
@@ -223,6 +245,10 @@ if __name__ == "__main__":
         for result in metric_results:
             file.write(result)
     
-    db.close()
+    for db in dbs:
+        try:
+            db.close()
+        except:
+            pass
 
     print(f"Benchmark results written to {output_file} and WAF results written to {device_output_file}")

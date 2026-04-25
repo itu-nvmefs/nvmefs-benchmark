@@ -249,9 +249,23 @@ class NvmeDevice:
         """
         Reset the device by deleting all namespaces and unmounting mounted namespaces
         """
-        for namespace in self.namespaces:
-            namespace.deallocate_blocks()
-            namespace.delete()
+        # Query hardware for active namespaces
+        try:
+            ns_list_out = subprocess.check_output(f"nvme list-ns --all {self.device_path}", shell=True, text=True)
+            active_nsids = []
+            for line in ns_list_out.strip().split('\n'):
+                if ':' in line and '[' in line:
+                    nsid_str = line.split(':')[1].strip()
+                    active_nsids.append(int(nsid_str, 16)) # Convert hex (0x1) to int (1)
+        except subprocess.CalledProcessError:
+            active_nsids = []
+
+        for nsid in active_nsids:
+            subprocess.run(f"nvme detach-ns {self.device_path} --namespace-id={nsid} --controllers=0x7", shell=True, stderr=subprocess.DEVNULL)
+            subprocess.run(f"nvme delete-ns {self.device_path} --namespace-id={nsid}", shell=True, stderr=subprocess.DEVNULL)
+        
+        self.namespaces = []
+        self.number_of_blocks, self.unallocated_number_of_blocks = self.__get_device_info()
 
 def calculate_waf(host_written_bytes, media_written_bytes):
     """
