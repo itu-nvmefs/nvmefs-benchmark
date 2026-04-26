@@ -24,23 +24,19 @@ public:
     conn = std::make_unique<duckdb::Connection>(*db);
 
     if (use_nvmefs) {
+      setenv("NVMEFS_DEVICE_PATH", dev_path.c_str(), 1);
+      setenv("NVMEFS_BACKEND", backend.c_str(), 1);
+      setenv("NVMEFS_META", "use_default_async|no_memory_manager", 1);
+      if (!fdp_map.empty()) {
+        setenv("NVMEFS_FDP_MAPPING", fdp_map.c_str(), 1);
+      }
+
       std::string ext_path = "/home/itu/nvmefs/build/release/extension/nvmefs/"
                              "nvmefs.duckdb_extension";
       auto load_res = conn->Query("LOAD '" + ext_path + "';");
       if (load_res->HasError())
         throw std::runtime_error("Extension Load Failed: " +
                                  load_res->GetError());
-      
-      std::string secret = "CREATE OR REPLACE PERSISTENT SECRET nvmefs (TYPE "
-                           "NVMEFS, nvme_device_path '" +
-                           dev_path + "', backend '" + backend + "'";
-      if (!fdp_map.empty())
-        secret += ", fdp_mapping '" + fdp_map + "'";
-      secret += ", meta 'use_default_async|no_memory_manager');";
-
-      auto sec_res = conn->Query(secret);
-      if (sec_res->HasError())
-        throw std::runtime_error("Secret Setup Failed: " + sec_res->GetError());
     }
 
     conn->Query("PRAGMA memory_limit='" + std::to_string(memory_limit_mb) + "MB';");

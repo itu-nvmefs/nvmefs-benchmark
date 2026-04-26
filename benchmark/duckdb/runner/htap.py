@@ -4,7 +4,7 @@ import time
 from database.database import Database
 from .tpch import setup_tpch_benchmark, run_tpch_epoch_benchmark
 from .ycsb import setup_ycsb_benchmark, run_ycsb_epoch_benchmark
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 HTAP_BENCHMARK_NAME = "htap"
 HTAP_NAMESPACE_COUNT = 2
@@ -28,7 +28,7 @@ def run_htap_epoch_benchmark(dbs: list[Database], scale_factor: int, duration_se
                 tpch_results.extend(run_tpch_epoch_benchmark([dbs[0]], scale_factor))
         return tpch_results
     
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ProcessPoolExecutor(max_workers=2) as pool:
         fut_tpch = pool.submit(tpch_loop)
         fut_ycsb = pool.submit(run_ycsb_epoch_benchmark, [dbs[1]], HTAP_YCSB_SF, duration_seconds, reps, checkpoint_mode)
 

@@ -159,19 +159,16 @@ class NvmeDatabase(Database):
     def _setup(self):
         extension_path = os.path.abspath(f"/home/itu/nvmefs/build/release/extension/nvmefs/nvmefs.duckdb_extension")
 
+        os.environ["NVMEFS_DEVICE_PATH"] = self.device_path
+        os.environ["NVMEFS_BACKEND"] = self.backend
+        os.environ["NVMEFS_META"] = "use_default_async|no_memory_manager"
+        if self.use_fdp:
+            os.environ["NVMEFS_FDP_MAPPING"] = self.config.get_fdp_mapping()
+        
         super()._connect()
         self.install_extension(extension_path)
-        self.add_extension(extension_path) 
-        secret = f"""CREATE OR REPLACE PERSISTENT SECRET nvmefs (
-                             TYPE NVMEFS,
-                             nvme_device_path '{self.device_path}',
-                             backend          '{self.backend}',
-                             meta             'use_default_async|no_memory_manager'"""
-        if self.use_fdp:
-            secret += f",\n fdp_mapping '{self.config.get_fdp_mapping()}'"
-        secret += "\n                    );"
-
-        self.execute(secret)
+        self.add_extension(extension_path)
+        
         self.execute(f"ATTACH DATABASE '{self.db_path}' AS bench (READ_WRITE);")
         self.execute("USE bench;")
         self.disable_object_cache()
