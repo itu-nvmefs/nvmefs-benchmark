@@ -3,10 +3,6 @@
 # ==========================================
 # Global Settings
 # ==========================================
-REPETITIONS=5
-YCSB_DURATION=1
-HTAP_DURATION=1
-
 DEVICE="/dev/nvme0"
 INPUT_DIR="/mnt/data/benchmark/"
 
@@ -16,13 +12,15 @@ HTAP_NS_SIZE=$(( M_SIZE_PRECONDITION / 2 ))
 THREADS=16
 CHECKPOINT_MODE="auto"
 
-# Scale Factors
-TPCH_SF=1000
+REPETITIONS=5
+TPCH_SF=10
 YCSB_SF=100
-HTAP_SF=10
+HTAP_SF=1000
+YCSB_DURATION=1
+HTAP_DURATION=60
 
 # Memory Limits
-TPCH_MEM_LIMITS=(10000 14000 18000 20000) 
+TPCH_MEM_LIMITS=(10000) # (10000 14000 18000 20000) 
 YCSB_MEM_LIMITS=(20000)
 HTAP_MEM_LIMIT=20000
 
@@ -41,6 +39,8 @@ SUITE_START_STR=$(date '+%Y-%m-%d %H:%M:%S')
 # ==========================================
 # TPC-H 
 # ==========================================
+
+: '
 
 echo "Starting TPCH Benchmarks..."
 
@@ -63,7 +63,6 @@ echo "Finished TPCH benchmark"
 # ==========================================
 # 2. YCSB 
 # ==========================================
-: '
 
 echo "Starting YCSB Benchmarks..."
 
@@ -83,6 +82,8 @@ for mem in "${YCSB_MEM_LIMITS[@]}"; do
 done
 
 echo "Finished YCSB benchmark"
+
+'
 
 # ==========================================
 # 3. HTAP 
@@ -104,7 +105,6 @@ python3 benchmark.py htap \
 
 echo "Finished HTAP benchmark"
 
-' 
 # ==========================================
 # Wrap-up
 # ==========================================

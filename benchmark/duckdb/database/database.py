@@ -157,6 +157,9 @@ class NvmeDatabase(Database):
         super().__init__(db_path, threads, memory)
     
     def _setup(self):
+        # if self.connection is not None:
+        #    return
+        
         extension_path = os.path.abspath(f"/home/itu/nvmefs/build/release/extension/nvmefs/nvmefs.duckdb_extension")
 
         os.environ["NVMEFS_DEVICE_PATH"] = self.device_path

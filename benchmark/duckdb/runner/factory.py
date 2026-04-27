@@ -53,7 +53,7 @@ def create_benchmark_runner(name: str, scale_factor: int, run_with_duration: boo
         return create_native_runner(ycsb.run_ycsb_epoch_benchmark), ycsb_setup
     elif name == htap.HTAP_BENCHMARK_NAME:
         htap_setup = lambda db, input_dir, sf: htap.setup_htap_benchmark(db, input_dir, sf, checkpoint_mode)
-        return create_managed_runner(htap.run_htap_epoch_benchmark), htap_setup
+        return create_native_runner(htap.run_htap_epoch_benchmark), htap_setup
     elif name == oocha.OOCHA_SPILL_BENCHMARK_NAME:
         return create_managed_runner(oocha.run_oocha_spill_epoch_benchmark), oocha.setup_oocha_spill_benchmark
     elif name == oocha.OOCHA_BENCHMARK_NAME:
