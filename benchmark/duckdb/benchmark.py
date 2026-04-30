@@ -223,7 +223,7 @@ def generate_filenames(args: Arguments) -> tuple[str, str]:
     run_id = (getattr(args, "run_id", None)
           or os.environ.get("SUITE_TIMESTAMP")
           or datetime.now().strftime("%Y%m%d_%H%M%S"))
-    target_dir = os.path.join("results", args.benchmark, run_id)
+    target_dir = os.path.join("results", run_id, args.benchmark)
     os.makedirs(target_dir, exist_ok=True)
 
     device_output_file = os.path.join(target_dir, f"{name}-device.csv")
