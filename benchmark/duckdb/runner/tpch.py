@@ -34,4 +34,4 @@ def run_tpch_epoch_benchmark(dbs: list[Database], scale_factor: int):
             print(f"{query_nr} failed due to {e}")  
             results.append(f"{query_nr};FAIL;{{}}\n")
 
-    return results
+    return {"tpch": results}

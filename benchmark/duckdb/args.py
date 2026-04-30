@@ -7,7 +7,8 @@ class Arguments:
     parallel: int = 0
     threads: int = 1
     repetitions: int = 0
-    scale_factor: int = 1
+    ycsb_sf: int = 1
+    tpch_sf: int = 1
     buffer_manager_mem_size: int = 50
     device: str = ""
     io_backend: str = ""
@@ -22,6 +23,8 @@ class Arguments:
     namespace_size: int = 0
     precondition: bool = False
     checkpoint_mode: str = "auto"
+    skip_reset: bool = False
+    run_id: str = ""
     
 
     def valid(self) -> bool:
@@ -42,8 +45,11 @@ class Arguments:
         parser.add_argument("benchmark", type=str, default="tpch",
                             help="Name of the benchmark to run (tpch, sensor, oocha)")
 
-        parser.add_argument("-s", "--sf", type=int, default=1,
-                            help="Scale factor (or batch multiplier for sensor)")
+        parser.add_argument("--tpch_sf", type=int, default=1,
+                            help="TPC-H Scaling Factor")
+        
+        parser.add_argument("--ycsb_sf", type=int, default=100,
+                            help="YCSB Scaling Factor")
 
         parser.add_argument("-d", "--duration", type=int, default=0,
                             help="Duration in minutes")
@@ -97,13 +103,20 @@ class Arguments:
         parser.add_argument("--checkpoint_mode", type=str, default="auto", choices=["auto", "manual"],
                     help="Determines how WAL checkpointing is handled in YCSB")
 
+        parser.add_argument("--skip_reset", action="store_true", default=False,
+                    help="Skip device reset and use existing preconditioned namespace")
+        
+        parser.add_argument("--run_id", type=str, default=None,
+                    help="Suite run identifier; results go to results/<benchmark>/<run_id>/")
+
         args = parser.parse_args()
         
         arguments = Arguments(
             duration=args.duration,
             repetitions=args.repetitions,
             device=args.device_path,
-            scale_factor=args.sf,
+            ycsb_sf=args.ycsb_sf,
+            tpch_sf=args.tpch_sf,
             buffer_manager_mem_size=args.memory_limit,
             io_backend=args.backend,
             use_fdp=args.fdp,
@@ -113,12 +126,14 @@ class Arguments:
             should_mount=args.mount,
             input_dir=args.input_directory,
             threads=args.threads,
-            parallel=args.parallel,
+            parallel=args.parallel, 
             sensor_batch_size=args.sensor_batch_size,
             namespace_id=args.namespace_id,
             namespace_size=args.namespace_size,
             precondition=args.precondition,
-            checkpoint_mode=args.checkpoint_mode
+            checkpoint_mode=args.checkpoint_mode,
+            skip_reset=args.skip_reset,
+            run_id=args.run_id
         )
 
         if not arguments.valid():

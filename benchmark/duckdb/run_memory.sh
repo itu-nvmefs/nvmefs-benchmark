@@ -14,13 +14,14 @@ CHECKPOINT_MODE="auto"
 
 REPETITIONS=5
 TPCH_SF=10
-YCSB_SF=100
-HTAP_SF=1000
+YCSB_SF=10
+HTAP_TPCH_SF=10
+HTAP_YCSB_SF=10
 YCSB_DURATION=1
-HTAP_DURATION=60
+HTAP_DURATION=1
 
 # Memory Limits
-TPCH_MEM_LIMITS=(10000) # (10000 14000 18000 20000) 
+TPCH_MEM_LIMITS=(10000) # (10000 14000 18000 20000)
 YCSB_MEM_LIMITS=(20000)
 HTAP_MEM_LIMIT=20000
 
@@ -33,15 +34,16 @@ echo "Building YCSB Engine..."
 ./$YCSB_ENGINE_PATH || { echo "Building failed. Aborting."; exit 1; }
 echo "YCSB Engine built successfully."
 
+export SUITE_TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
+echo "Benchmark Suite Run ID: $SUITE_TIMESTAMP"
+
 SUITE_START_TIMESTAMP=$(date +%s)
 SUITE_START_STR=$(date '+%Y-%m-%d %H:%M:%S')
 
 # ==========================================
 # TPC-H 
 # ==========================================
-
 : '
-
 echo "Starting TPCH Benchmarks..."
 
 for mem in "${TPCH_MEM_LIMITS[@]}"; do
@@ -53,7 +55,7 @@ for mem in "${TPCH_MEM_LIMITS[@]}"; do
         --generic_device \
         --backend "io_uring_cmd" \
         --memory_limit $mem \
-        --sf $TPCH_SF \
+        --tpch_sf $TPCH_SF \
         --threads $THREADS \
         --namespace_size $M_SIZE_PRECONDITION
 done
@@ -75,19 +77,18 @@ for mem in "${YCSB_MEM_LIMITS[@]}"; do
         --generic_device \
         --backend "io_uring_cmd" \
         --memory_limit $mem \
-        --sf $YCSB_SF \
+        --ycsb_sf $YCSB_SF \
         --threads $THREADS \
         --namespace_size $M_SIZE_PRECONDITION \
         --checkpoint_mode $CHECKPOINT_MODE
 done
 
 echo "Finished YCSB benchmark"
-
-'
-
+' 
 # ==========================================
 # 3. HTAP 
 # ==========================================
+
 echo "Starting HTAP Benchmarks..."
 
 echo "Running HTAP No-FDP - Memory Limit: ${HTAP_MEM_LIMIT}MB"
@@ -98,12 +99,14 @@ python3 benchmark.py htap \
     --generic_device \
     --backend "io_uring_cmd" \
     --memory_limit $HTAP_MEM_LIMIT \
-    --sf $HTAP_SF \
+    --tpch_sf $HTAP_TPCH_SF \
+    --ycsb_sf $HTAP_YCSB_SF \
     --threads $THREADS \
     --namespace_size $HTAP_NS_SIZE \
     --checkpoint_mode $CHECKPOINT_MODE
 
 echo "Finished HTAP benchmark"
+
 
 # ==========================================
 # Wrap-up
