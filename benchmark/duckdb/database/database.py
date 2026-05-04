@@ -12,6 +12,7 @@ class ConnectionConfig:
     memory: int = 0
     threads: int = 0
     ns_id: int = 1
+    extension_path: str = ""
 
     def get_fdp_mapping(self) -> str:
         mappings = {
@@ -20,8 +21,8 @@ class ConnectionConfig:
             "wal-isolated": ".db:0,.wal:1,.tmp:0",
             "fully-isolated": ".db:0,.tmp:1,.wal:2"
         }
-        return mappings.get(self.fdp_strategy.lower(), mappings["baseline"])
-
+        strategy = (self.fdp_strategy or "baseline").lower()
+        return mappings.get(strategy, mappings["baseline"])
 
 class Database(ABC):
 
@@ -124,7 +125,7 @@ class SPDKDatabase(Database):
 
     def _setup(self):
         print("Setting up SPDKDatabase")
-        install_extension("../../nvmefs/build/release/extension/nvmefs/nvmefs.duckdb_extension", self)
+        install_extension(self.config.extension_path, self)
         super()._connect()
         self.add_extension("nvmefs")
 
@@ -157,10 +158,7 @@ class NvmeDatabase(Database):
         super().__init__(db_path, threads, memory)
     
     def _setup(self):
-        # if self.connection is not None:
-        #    return
-        
-        extension_path = os.path.abspath(f"/home/itu/nvmefs/build/release/extension/nvmefs/nvmefs.duckdb_extension")
+        extension_path = os.path.abspath(self.config.extension_path)
 
         os.environ["NVMEFS_DEVICE_PATH"] = self.device_path
         os.environ["NVMEFS_BACKEND"] = self.backend
@@ -169,9 +167,10 @@ class NvmeDatabase(Database):
             os.environ["NVMEFS_FDP_MAPPING"] = self.config.get_fdp_mapping()
         
         super()._connect()
+
         self.install_extension(extension_path)
+
         self.add_extension(extension_path)
-        
         self.execute(f"ATTACH DATABASE '{self.db_path}' AS bench (READ_WRITE);")
         self.execute("USE bench;")
         self.disable_object_cache()

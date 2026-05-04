@@ -25,6 +25,7 @@ class Arguments:
     checkpoint_mode: str = "auto"
     skip_reset: bool = False
     run_id: str = ""
+    extension_path: str = ""
     
 
     def valid(self) -> bool:
@@ -109,6 +110,9 @@ class Arguments:
         parser.add_argument("--run_id", type=str, default=None,
                     help="Suite run identifier; results go to results/<benchmark>/<run_id>/")
 
+        parser.add_argument("--extension_path", type=str, default="", 
+                help="Path to the compiled duckdb extension")
+
         args = parser.parse_args()
         
         arguments = Arguments(
@@ -133,7 +137,8 @@ class Arguments:
             precondition=args.precondition,
             checkpoint_mode=args.checkpoint_mode,
             skip_reset=args.skip_reset,
-            run_id=args.run_id
+            run_id=args.run_id,
+            extension_path=args.extension_path
         )
 
         if not arguments.valid():

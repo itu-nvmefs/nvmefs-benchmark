@@ -43,7 +43,8 @@ def prepare_setup_func(args: Arguments, namespace_count: int = 1) -> SetupFunc:
                 args.fdp_strategy,
                 args.buffer_manager_mem_size,
                 args.threads,
-                ns_id)
+                ns_id,
+                args.extension_path)
 
             db = database.connect(f"nvmefs:///bench_ns{ns_id}.db", args.threads, args.buffer_manager_mem_size, config)
             dbs.append(db)
@@ -240,6 +241,7 @@ def generate_filenames(args: Arguments) -> tuple[str, str]:
 
 if __name__ == "__main__":
     args: Arguments = Arguments.parse_args()
+    print(f"[DEBUG] skip_reset={args.skip_reset}, device={args.device}")
 
     initial_device = NvmeDevice(args.device) if args.device else None
     if not args.skip_reset and initial_device:
@@ -261,6 +263,7 @@ if __name__ == "__main__":
     
     # Setup the database with the correct device config
     dbs, device = setup_device_and_db()
+
     print(f"Setting up benchmark using {args.threads} threads and {args.buffer_manager_mem_size} MB of memory")
     setup_benchmark(dbs, args.input_dir)
     metric_results = []

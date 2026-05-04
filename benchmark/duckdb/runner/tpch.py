@@ -12,18 +12,20 @@ def setup_tpch_benchmark(dbs: list[Database], input_dir_path: str, scale_factor:
         print(f"ERROR: TPCH benchmark {input_file_path} does not exist")
 
     db = dbs[0]
+    
     db.add_extension("tpch")
-    db.execute(f"ATTACH DATABASE '{input_file_path}' AS tpch (READ_WRITE);")
+
+    db.execute(f"ATTACH DATABASE '{input_file_path}' AS tpch (READ_ONLY);")
     db.execute("COPY FROM DATABASE tpch TO bench;")
     db.execute("DETACH DATABASE tpch;")
     db.execute("PRAGMA disable_object_cache;")
 
-def run_tpch_epoch_benchmark(dbs: list[Database], scale_factor: int):
+def run_tpch_epoch_benchmark(dbs: list[Database], scale_factor: int, coord=None):
     results: list[str] = []
     db = dbs[0]
     use_nvmefs = db.db_path.startswith("nvmefs://")
     
-    for query_nr in range(1, 22):
+    for query_nr in range(1, 23):
         try: 
             with QueryProfiler(db, f"tpch-{query_nr}", use_nvmefs) as profiler:
                 db.execute(f"PRAGMA tpch({query_nr});").fetchall()

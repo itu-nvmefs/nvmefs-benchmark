@@ -260,10 +260,10 @@ class NvmeDevice:
         except subprocess.CalledProcessError:
             active_nsids = []
 
-        for nsid in active_nsids:
+        for nsid in active_nsids:   
             subprocess.run(f"nvme detach-ns {self.device_path} --namespace-id={nsid} --controllers=0x7", shell=True, stderr=subprocess.DEVNULL)
             subprocess.run(f"nvme delete-ns {self.device_path} --namespace-id={nsid}", shell=True, stderr=subprocess.DEVNULL)
-        
+
         self.namespaces = []
         self.number_of_blocks, self.unallocated_number_of_blocks = self.__get_device_info()
 
