@@ -1,0 +1,135 @@
+detach-ns: Success, nsid:1
+delete-ns: Success, deleted nsid:1
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+NVMe Status:Successful Completion: The command completed without error(0)
+Creating namespace 1 with 413085937 blocks
+namespace cap: ~1575.8 GB, writing 1.0x = 1575 GB
+fio target:        /dev/nvme0n1
+fio rw:            randwrite
+fio block size:    4K
+fio size:          1575 GB
+fio loops:         1
+poll interval:     30.0s
+max drain:         1800s
+
+fio finished in 983.4s
+Polling drain for 1800s (looking for late updates)...
+  reached stable at 780s; continuing to poll...
+First stable at 780s; 0 late update(s) over 1800s total
+
+=== Summary ===
+Expected (fio):      1575.000 GB
+fio elapsed:         983.4s (1640 MB/s)
+
+At fio completion:
+  host:              1573.715 GB (99.92%)
+  media:             722.807 GB (45.89%)
+  apparent WAF:      0.4593
+  buffered gap:      850.909 GB
+
+After 1800s drain:
+  host:              1575.000 GB (100.00%)
+  media:             1625.804 GB (103.23%)
+  apparent WAF:      1.0323
+  remaining gap:     -50.803 GB
+
+Drain caught up:     902.997 GB
+First stable at:     780s
+Late updates:        0
+
+CSV:                 counters_rand_fill1x_4k.csv
+fio log:             fio_rand_fill1x_4k.log
