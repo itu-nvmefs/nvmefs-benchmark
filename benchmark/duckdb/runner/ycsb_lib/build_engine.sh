@@ -5,8 +5,8 @@ set -e
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 # 2. Path to the DuckDB source and build
-DUCKDB_SOURCE_DIR=$(realpath "$SCRIPT_DIR/../../../../../nvmefs/duckdb")
-DUCKDB_BUILD_DIR=$(realpath "$SCRIPT_DIR/../../../../../nvmefs/build/release")
+DUCKDB_SOURCE_DIR=$(realpath "$SCRIPT_DIR/../../../../../nvmefs2/duckdb")
+DUCKDB_BUILD_DIR=$(realpath "$SCRIPT_DIR/../../../../../nvmefs2/build/release")
 
 # 3. Define the specific Include and Library paths
 DUCKDB_INC="$DUCKDB_SOURCE_DIR/src/include"

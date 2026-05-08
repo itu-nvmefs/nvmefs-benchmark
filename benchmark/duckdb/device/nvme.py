@@ -151,7 +151,11 @@ class NvmeDevice:
         
         run_cmd(f"nvme delete-ns {self.device_path} --namespace-id={namespace_id}")
 
-    def create_namespace(self, namespace_id: int, enable_fdp: bool = False, should_mount: bool = False, endgrp_id: int = 1, size_blocks: int = 0, precondition: bool = False):
+    def create_namespace(self, 
+                        namespace_id: int, enable_fdp: bool = False, 
+                        should_mount: bool = False, endgrp_id: int = 1, size_blocks: int = 0, 
+                        precondition: bool = False, fio_file: str = None, settle_seconds: int = 0, 
+                        dsm_after_precondition: bool = True):
         """
         Creates a namespace on the device and attaches it
 
@@ -168,7 +172,7 @@ class NvmeDevice:
         print(f"Creating namespace {namespace_id} with {ns_number_of_blocks} blocks")
         
         if enable_fdp:
-            run_cmd(f"nvme create-ns {self.device_path} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks} --flbas=0 --endg-id={endgrp_id} --nphndls=4 --phndls=0,1,2,3")
+            run_cmd(f"nvme create-ns {self.device_path} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks} --flbas=0 --endg-id={endgrp_id} --nphndls=4 --phndls=1,2,3,4")
         else: 
             run_cmd(f"nvme create-ns {self.device_path} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks} --flbas=0")
 
@@ -209,11 +213,18 @@ class NvmeDevice:
                 run_cmd(f"fio --name=random-writes --directory={mount_path} --rw=randwrite --bs=4k --iodepth=64 --direct=1 --ioengine=libaio --time_based --runtime=1800 --write_iops_log=steadystate --log_avg_msec=60000")
                 run_cmd(f"rm -f {mount_path}/seq-fill.* {mount_path}/random-writes.*")
             else:
-                print(f"Preconditioning {precondition_path}...")
-                for i in range(4):
-                    print(f"Preconditioning {i}...")
-                    run_cmd(f"fio --name=seq-fill-{i} --filename={precondition_path} --rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio --size=100%")
-                run_cmd(f"fio --name=random-writes --filename={precondition_path} --rw=randwrite --bs=4k --iodepth=64 --direct=1 --ioengine=libaio --time_based --runtime=1800 --write_iops_log=steadystate --log_avg_msec=60000")
+                if fio_file and os.path.exists(fio_file):
+                    print(f"Preconditioning {precondition_path} using {fio_file}...")
+                    run_cmd(f"fio {fio_file} --filename={precondition_path}")
+                else:
+                    raise FileNotFoundError(f"FIO file not found: {fio_file}")
+        
+            if settle_seconds > 0:
+                print(f"Waiting {settle_seconds}s for FTL to settle...")
+                time.sleep(settle_seconds)
+        
+            if dsm_after_precondition:
+                new_namespace.deallocate_blocks()
 
         self.namespaces.append(new_namespace)
         return new_namespace, mount_path
@@ -266,6 +277,42 @@ class NvmeDevice:
 
         self.namespaces = []
         self.number_of_blocks, self.unallocated_number_of_blocks = self.__get_device_info()
+    
+    def create_filler_namespace(self, namespace_id: int, size_blocks: int, enable_fdp: bool = False, endgrp_id: int = 1, phndls: str = "0"):
+        """
+        Creates a namespace intended to hold static cold data that occupies device capacity without being touched by the workload.
+        """
+        print(f"Creating filler namespace {namespace_id} with {size_blocks} blocks")
+
+        if enable_fdp:
+            # Filler namespace gets its own dedicated reclaim unit handle
+            run_cmd(f"nvme create-ns {self.device_path} --nsze={size_blocks} --ncap={size_blocks} "
+                    f"--flbas=0 --endg-id={endgrp_id} --nphndls=1 --phndls={phndls}")
+        else:
+            run_cmd(f"nvme create-ns {self.device_path} --nsze={size_blocks} --ncap={size_blocks} --flbas=0")
+        
+        run_cmd(f"nvme attach-ns {self.device_path} --namespace-id={namespace_id} --controllers=0x7")
+        run_cmd(f"nvme ns-rescan {self.device_path}")
+
+        return NvmeDeviceNamespace(self.device_path, namespace_id, size_blocks, is_mounted=False)
+
+def fill_namespace_with_data(namespace: NvmeDeviceNamespace):
+    """
+    One-time sequential fill of a namespace with valid, incompressible data.
+    """
+    device_path = namespace.get_device_path()
+    print(f"Filling {device_path} with valid data...")
+
+    subprocess.run("udevadm settle", shell=True, stderr=subprocess.DEVNULL)
+    time.sleep(2)
+        
+    fill_cmd = (
+    f"fio --name=filler --filename={device_path} "
+    f"--rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio "
+    f"--refill_buffers=1 --size=100%"
+    )
+    subprocess.run(fill_cmd, shell=True, check=True)  # don't capture, stream output
+    print(f"Filler namespace {namespace.namespace_id} ready.")
 
 def calculate_waf(host_written_bytes, media_written_bytes):
     """
@@ -276,29 +323,26 @@ def calculate_waf(host_written_bytes, media_written_bytes):
     return media_written_bytes / host_written_bytes
 
 def setup_device(device: NvmeDevice, namespace_id: int = 1, enable_fdp: bool = False, should_mount: bool = False,
-                 endgrp_id: int = 1, size_blocks: int = 0, precondition: bool = False) -> tuple[NvmeDeviceNamespace, str
-                                                                                                | Any | None]:
+                 endgrp_id: int = 1, size_blocks: int = 0, precondition: bool = False,
+                 fio_file: str = None, settle_seconds: int = 0,
+                 dsm_after_precondition: bool = False) -> tuple[NvmeDeviceNamespace, str | Any | None]:
     """
-    Sets up the device by creating a namespace and enabling FDP if required
+    Create a workload namespace and optionally precondition it.
     """
-
     device_ns_path = pathlib.Path(f"{device.device_path}n{namespace_id}")
-
     if device_ns_path.exists():
-        # TODO: Check if unknown namespace is already mounted and unmount before dealocating and delete of ns
         subprocess.run(f"umount -l {device_ns_path}", shell=True, stderr=subprocess.DEVNULL)
         device.deallocate_nsid(namespace_id)
         device.delete_namespace_nsid(namespace_id)
 
-    if enable_fdp:
-        device.enable_fdp(endgrp_id)
-    else:
-        device.disable_fdp(endgrp_id)
-
-    new_namespace, mount_path = device.create_namespace(namespace_id, enable_fdp, should_mount=should_mount, endgrp_id=endgrp_id, size_blocks=size_blocks, precondition=precondition)
-
-    if precondition:
-        verify_steady_state()
+    new_namespace, mount_path = device.create_namespace(
+        namespace_id, enable_fdp,
+        should_mount=should_mount, endgrp_id=endgrp_id, size_blocks=size_blocks,
+        precondition=precondition,
+        fio_file=fio_file,
+        settle_seconds=settle_seconds,
+        dsm_after_precondition=dsm_after_precondition,
+    )
 
     return new_namespace, mount_path
 

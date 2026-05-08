@@ -20,20 +20,29 @@ def setup_tpch_benchmark(dbs: list[Database], input_dir_path: str, scale_factor:
     db.execute("DETACH DATABASE tpch;")
     db.execute("PRAGMA disable_object_cache;")
 
-def run_tpch_epoch_benchmark(dbs: list[Database], scale_factor: int, coord=None):
+def run_tpch_epoch_benchmark(dbs: list[Database], scale_factor: int,
+                             worker_handle=None, output_handle=None):
     results: list[str] = []
     db = dbs[0]
     use_nvmefs = db.db_path.startswith("nvmefs://")
-    
+
     for query_nr in range(1, 23):
-        try: 
+        try:
             with QueryProfiler(db, f"tpch-{query_nr}", use_nvmefs) as profiler:
                 db.execute(f"PRAGMA tpch({query_nr});").fetchall()
-
             metrics_json = json.dumps(profiler.nvmefs_metrics)
-            results.append(f"{query_nr};{profiler.latency_ms:.2f};{metrics_json}\n")
+            row = f"{query_nr};{profiler.latency_ms:.2f};{metrics_json}\n"
         except Exception as e:
-            print(f"{query_nr} failed due to {e}")  
-            results.append(f"{query_nr};FAIL;{{}}\n")
+            print(f"{query_nr} failed due to {e}")
+            row = f"{query_nr};FAIL;{{}}\n"
 
+        results.append(row)
+        if output_handle is not None:
+            output_handle.write(row)
+            output_handle.flush()
+
+        if worker_handle is not None:
+            worker_handle.checkpoint_if_requested(f"tpch-q{query_nr}")
+
+    db.execute("PRAGMA disable_profiling;")
     return {"tpch": results}

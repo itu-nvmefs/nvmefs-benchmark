@@ -1,14 +1,15 @@
 import os
-from threading import Thread
 import time
-from typing import Callable
+import multiprocessing.pool
 
-from runner.factory import create_benchmark_runner, get_namespace_count
-from device.nvme import NvmeDevice, setup_device, calculate_waf, NvmeDeviceNamespace
+from args import Arguments
 from database import database
 from datetime import datetime
-import multiprocessing.pool
-from args import Arguments
+from typing import Callable
+from threading import Thread
+from runner.coordinator import WAFCheckpoint
+from runner.factory import create_benchmark_runner, get_namespace_count
+from device.nvme import NvmeDevice, setup_device, calculate_waf, NvmeDeviceNamespace, fill_namespace_with_data
 
 type SetupFunc = Callable[[], tuple[list[database.Database],NvmeDevice]]
 
@@ -24,7 +25,11 @@ def prepare_setup_func(args: Arguments, namespace_count: int = 1) -> SetupFunc:
 
         for ns_id in range(1, namespace_count + 1):
             if not args.skip_reset:
-                device_namespace, _ = setup_device(device, namespace_id=ns_id, enable_fdp=args.use_fdp, size_blocks=args.namespace_size, precondition=args.precondition)
+                device_namespace, _ = setup_device(device, namespace_id=ns_id, enable_fdp=args.use_fdp, 
+                                            size_blocks=args.namespace_size, precondition=args.precondition,
+                                            fio_file=args.fio_file, settle_seconds=args.settle_seconds,
+                                            dsm_after_precondition=args.dsm_after_preconditioning,
+                                            )
             else:
                 print(f"Use existing namespace {ns_id}...")
                 device_namespace = NvmeDeviceNamespace(device.device_path, ns_id, args.namespace_size)
@@ -44,21 +49,23 @@ def prepare_setup_func(args: Arguments, namespace_count: int = 1) -> SetupFunc:
                 args.buffer_manager_mem_size,
                 args.threads,
                 ns_id,
-                args.extension_path)
+                args.extension_path
+            )
 
-            db = database.connect(f"nvmefs:///bench_ns{ns_id}.db", args.threads, args.buffer_manager_mem_size, config)
+            db = database.connect(f"nvmefs:///bench_ns{ns_id}.db", args.threads, args.buffer_manager_mem_size, args.temp_size, config)
             dbs.append(db)
         return dbs, device
     
     def setup_normal():
         dbs = []
         for ns_id in range(1, namespace_count + 1):
-            _, mount_path = setup_device(device, namespace_id=ns_id, should_mount=args.should_mount, size_blocks=args.namespace_size, precondition=args.precondition)
+            _, mount_path = setup_device(device, namespace_id=ns_id, should_mount=args.should_mount, size_blocks=args.namespace_size, precondition=args.precondition,
+                                    fio_file=args.fio_file, settle_seconds=args.settle_seconds, dsm_after_precondition=args.dsm_after_preconditioning,)
             normal_db_path = os.path.join(mount_path, f"bench_ns{ns_id}.db")
 
             time.sleep(5)
 
-            db = database.connect(normal_db_path, args.threads, args.buffer_manager_mem_size)
+            db = database.connect(normal_db_path, args.threads, args.buffer_manager_mem_size, args.temp_size)
             temp_dir = os.path.join(mount_path, ".tmp")
             db.execute(f"SET temp_directory = '{temp_dir}';")
             dbs.append(db)
@@ -241,14 +248,15 @@ def generate_filenames(args: Arguments) -> tuple[str, str]:
 
 if __name__ == "__main__":
     args: Arguments = Arguments.parse_args()
-    print(f"[DEBUG] skip_reset={args.skip_reset}, device={args.device}")
 
     initial_device = NvmeDevice(args.device) if args.device else None
     if not args.skip_reset and initial_device:
-        # Device reset and preconditioning
-        print("Resetting device to ensure consistent state...")
+        print("Resetting device to ensure consistent state.")
         initial_device.reset()
         initial_device.number_of_blocks, initial_device.unallocated_number_of_blocks = initial_device._NvmeDevice__get_device_info()
+
+    if args.use_fdp:
+        initial_device.enable_fdp()
 
     namespace_count = get_namespace_count(args.benchmark)
 
@@ -256,21 +264,64 @@ if __name__ == "__main__":
     output_file, device_output_file = generate_filenames(args)
 
     run_with_duration = args.duration > 0
-    run_benchmark, setup_benchmark = create_benchmark_runner(
-        args.benchmark, run_with_duration, args.checkpoint_mode,
-        tpch_sf=args.tpch_sf, ycsb_sf=args.ycsb_sf,
-    )
     
     # Setup the database with the correct device config
     dbs, device = setup_device_and_db()
+
+    if args.filler:
+        # Create filler namespace
+        namespace_count = get_namespace_count(args.benchmark)
+        total_workload_blocks = args.namespace_size * namespace_count
+        filler_size = initial_device.unallocated_number_of_blocks - total_workload_blocks
+
+        if filler_size <= 0:
+            raise ValueError(f"Total workload size {total_workload_blocks} blocks exceed device capacity.")
+        
+        filler_ns_id = namespace_count + 1
+        filler_ns = initial_device.create_filler_namespace(namespace_id=filler_ns_id, size_blocks=filler_size, enable_fdp=args.use_fdp, phndls="0")
+        fill_namespace_with_data(filler_ns)
+
+
+    _, setup_benchmark = create_benchmark_runner(
+        args.benchmark, run_with_duration, args.checkpoint_mode,
+        tpch_sf=args.tpch_sf, ycsb_sf=args.ycsb_sf,
+    )
 
     print(f"Setting up benchmark using {args.threads} threads and {args.buffer_manager_mem_size} MB of memory")
     setup_benchmark(dbs, args.input_dir)
     metric_results = []
 
-    # Run the benchmark
-    stop_measurement = start_device_measurements(device, device_output_file, enable_fdp=args.use_fdp)
+    coordinator = None
+    if args.drain:
+        coordinator = WAFCheckpoint(
+            device,
+            device_output_file,
+            enable_fdp=args.use_fdp,
+            drain_interval_s=args.drain_interval,
+            drain_duration_s=args.drain_duration,
+            drain_final_duration_s=args.drain_final_duration,
+            drain_poll_interval_s=args.drain_poll_interval
+        )
+        coordinator.start()
+        stop_measurement = coordinator.stop
+    else:
+        stop_measurement = start_device_measurements(device, device_output_file, enable_fdp=args.use_fdp)
 
+    output_handle = {}
+    for key, path in output_file.items():
+        f = open(path, "w", newline="\n")
+        f.write(HEADERS.get(key, "name;metrics\n"))
+        f.flush()
+        output_handle[key] = f
+    
+    run_benchmark, _ = create_benchmark_runner(
+        args.benchmark, run_with_duration, args.checkpoint_mode,
+        tpch_sf=args.tpch_sf, ycsb_sf=args.ycsb_sf,
+        coordinator=coordinator,
+        output_handle=output_handle,
+    )
+
+    # Run the benchmark
     if args.parallel > 0:
         print(f"Running benchmark with {args.parallel} parallel executions")
         metric_results = run_concurrent_benchmark(args.parallel, run_benchmark, dbs, args.duration if run_with_duration else args.repetitions)
@@ -281,11 +332,9 @@ if __name__ == "__main__":
     stop_measurement()
 
     # Write the results to a CSV file
-    for key, path in output_file.items():
-        with open(path, "w", newline="\n") as f:
-            f.write(HEADERS.get(key, "name;metrics\n"))
-            for row in metric_results[key]:
-                f.write(row)
+    for f in output_handle.values():
+        f.close()
+
     
     for db in dbs:
         try:

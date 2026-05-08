@@ -26,7 +26,16 @@ class Arguments:
     skip_reset: bool = False
     run_id: str = ""
     extension_path: str = ""
-    
+    drain: bool = False
+    drain_interval: int = 660
+    drain_duration: int = 660
+    drain_final_duration: int = 1800
+    drain_poll_interval: int = 30
+    fio_file: str = None
+    settle_seconds: int = 900
+    dsm_after_preconditioning: bool = False
+    filler: bool = False
+    temp_size: int = 200
 
     def valid(self) -> bool:
         if self.use_fdp and self.device is None:
@@ -112,6 +121,38 @@ class Arguments:
 
         parser.add_argument("--extension_path", type=str, default="", 
                 help="Path to the compiled duckdb extension")
+        
+        parser.add_argument("--drain", action="store_true", default=False,
+                help="Pause workloads at safe points to take quiesced WAF readings "
+                "(works around media-written counters that update in lazy bursts).")
+        
+        parser.add_argument("--drain-interval", type=int, default=660,
+                help="Seconds between drain checkpoints (default 660).")
+        
+        parser.add_argument("--drain-duration", type=int, default=660,
+                help="Seconds to wait at each drain for media-written to settle (default 660).")
+
+        parser.add_argument("--drain-final-duration", type=int, default=1800,
+                help="Seconds to wait at end-of-run before taking the final drained reading. "
+                "Should be >= --drain-duration; longer captures post-stop GC.")
+        
+        parser.add_argument("--drain-poll-interval", type=int, default=30,
+                help="Seconds between media-counter polls during mid-run drains (default 30).")
+
+        parser.add_argument("--fio_file", type=str, default=None,
+                    help="Path to fio job file for preconditioning (e.g. fio/uniform.fio)")
+        
+        parser.add_argument("--settle_seconds", type=int, default=900,
+                    help="Seconds to wait after preconditioning for FTL to settle")
+        
+        parser.add_argument("--dsm_after_preconditioning", action="store_true",
+                    help="Skip DSM after preconditioning")
+
+        parser.add_argument("--filler", action="store_true", default=False,
+                    help="Create a filler namespace with valid data to occupy device capacity outside the workload region")
+        
+        parser.add_argument("--max_temp_size", type=int, default="200", 
+                    help="DuckDB max_temp_directory_size limit")
 
         args = parser.parse_args()
         
@@ -138,7 +179,17 @@ class Arguments:
             checkpoint_mode=args.checkpoint_mode,
             skip_reset=args.skip_reset,
             run_id=args.run_id,
-            extension_path=args.extension_path
+            extension_path=args.extension_path,
+            drain=args.drain,
+            drain_interval=args.drain_interval,
+            drain_duration=args.drain_duration,
+            drain_final_duration=args.drain_final_duration,
+            drain_poll_interval=args.drain_poll_interval,
+            fio_file=args.fio_file,
+            settle_seconds=args.settle_seconds,
+            dsm_after_preconditioning=args.dsm_after_preconditioning,
+            filler=args.filler,
+            temp_size=args.max_temp_size,
         )
 
         if not arguments.valid():
