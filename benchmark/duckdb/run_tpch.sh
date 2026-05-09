@@ -6,10 +6,10 @@
 DEVICE="/dev/nvme0"
 INPUT_DIR="/mnt/data/benchmark/"
 THREADS=64
-REPETITIONS=6
+REPETITIONS=12
 
 # WAF Drain
-ENABLE_DRAIN=1
+ENABLE_DRAIN=0
 DRAIN_INTERVAL=660    # seconds of active work between drains
 DRAIN_DURATION=660    # seconds to wait at each drain
 DRAIN_FINAL_DURATION=1800
@@ -19,7 +19,7 @@ if [ "$ENABLE_DRAIN" -eq 1 ]; then
 fi
 
 # Filler
-ENABLE_FILLER=1
+ENABLE_FILLER=0
 FILLER_ARGS=()
 if [ "$ENABLE_FILLER" -eq 1 ]; then
     FILLER_ARGS=(--filler)
@@ -58,12 +58,12 @@ fi
 
 # TPCH Configs: SF MEM_LIMIT WORKLOAD_SIZE_GB TEMP_SIZE_GB
 CONFIGS=(
-    "1000 12000 375 80"
-    "3000 38000 1110 235"
+    # "1000 12000 385 90"
+    "3000 38000 1135 255"
 )
 
 # Precondition
-PRECOND_STATES=(0 1)
+PRECOND_STATES=(0)
 FIO_FILE="fio/uniform.fio"
 SETTLE_SECONDS=900
 
