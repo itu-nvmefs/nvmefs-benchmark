@@ -309,9 +309,9 @@ def fill_namespace_with_data(namespace: NvmeDeviceNamespace):
     fill_cmd = (
     f"fio --name=filler --filename={device_path} "
     f"--rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio "
-    f"--refill_buffers=1 --size=100%"
+    f"--refill_buffers=1 --scramble_buffers=1 --size=100%"
     )
-    subprocess.run(fill_cmd, shell=True, check=True)  # don't capture, stream output
+    subprocess.run(fill_cmd, shell=True, check=True) 
     print(f"Filler namespace {namespace.namespace_id} ready.")
 
 def calculate_waf(host_written_bytes, media_written_bytes):

@@ -34,11 +34,13 @@ private:
   int num_fields;
   int field_length;
   bool use_nvmefs;
+  int batch_size;
 
   std::atomic<bool> drain_requested{false};
   std::atomic<bool> drain_paused{false};
   std::atomic<bool> drain_release{false};
 
+public:
   std::map<std::string, int64_t> sample_metrics() {
     std::map<std::string, int64_t> metrics;
     if (!use_nvmefs) return metrics;
@@ -53,13 +55,12 @@ private:
     return metrics;
   }
 
-public:
   YCSBRunner(const std::string db_path, const std::string dev_path,
              const std::string backend, const std::string fdp_map,
              bool use_nvmefs, int memory_limit_mb,
              const std::string checkpoint_mode,
-             int num_fields_ = 10, int field_length_ = 100)
-      : num_fields(num_fields_), field_length(field_length_), use_nvmefs(use_nvmefs) {
+             int num_fields_ = 10, int field_length_ = 100, int batch_size_ = 30)
+      : num_fields(num_fields_), field_length(field_length_), use_nvmefs(use_nvmefs), batch_size(batch_size_) {
 
     duckdb::DBConfig config;
     config.SetOption("allow_unsigned_extensions", true);
@@ -68,19 +69,31 @@ public:
     conn = std::make_unique<duckdb::Connection>(*db);
 
     if (use_nvmefs) {
-      setenv("NVMEFS_DEVICE_PATH", dev_path.c_str(), 1);
-      setenv("NVMEFS_BACKEND", backend.c_str(), 1);
-      setenv("NVMEFS_META", "use_default_async|no_memory_manager", 1);
-      if (!fdp_map.empty()) {
-        setenv("NVMEFS_FDP_MAPPING", fdp_map.c_str(), 1);
-      }
-
       std::string ext_path = "/home/itu/nvmefs2/build/release/extension/nvmefs/"
                              "nvmefs.duckdb_extension";
       auto load_res = conn->Query("LOAD '" + ext_path + "';");
       if (load_res->HasError())
         throw std::runtime_error("Extension Load Failed: " +
                                  load_res->GetError());
+      std::string secret_name = "nvmefs_engine";
+      std::string secret_sql =
+        "CREATE OR REPLACE PERSISTENT SECRET " + secret_name + " (\n"
+        "    TYPE NVMEFS,\n"
+        "    nvme_device_path '" + dev_path + "',\n"
+        "    backend          '" + backend + "',\n"
+        "    meta             'use_default_async|no_memory_manager'";
+      if (!fdp_map.empty()) {
+        secret_sql += ",\n    fdp_mapping '" + fdp_map + "'";
+      }
+      secret_sql += "\n);";
+
+      auto secret_res = conn->Query(secret_sql);
+      if (secret_res->HasError())
+        throw std::runtime_error("nvmefs secret creation failed: " + secret_res->GetError());
+
+      auto activate_res = conn->Query("PRAGMA activate_nvmefs('" + secret_name + "');");
+      if (activate_res->HasError())
+        throw std::runtime_error("nvmefs activation failed: " + activate_res->GetError());
     }
 
     conn->Query("PRAGMA memory_limit='" + std::to_string(memory_limit_mb) +
@@ -137,7 +150,7 @@ public:
   // Returns one tuple per interval:
   //   (interval_start_offset_seconds, interval_duration_ms, iterations_in_interval)
   std::vector<std::tuple<double, double, int, std::map<std::string, int64_t>>>
-  run(int iterations, int row_count, int duration_seconds, int interval_seconds,
+  run(int64_t iterations, int64_t row_count, int duration_seconds, int interval_seconds,
     std::function<void(double, double, int, std::map<std::string, int64_t>)> callback = nullptr) {
     py::gil_scoped_release release;
 
@@ -160,10 +173,7 @@ public:
         }
     };
 
-    std::cout << "[RUN] Start Benchmark loop for " << iterations << " iterations" << std::endl;
-
-    const int BATCH_SIZE = 30;
-
+    const int BATCH_SIZE = batch_size;
     auto run_start = std::chrono::high_resolution_clock::now();
     auto interval_start = run_start;
     int interval_iterations = 0;
@@ -171,7 +181,7 @@ public:
 
     conn->Query("BEGIN TRANSACTION;");
 
-    for (int i = 0; i < iterations; i++) {
+    for (int64_t i = 0; i < iterations; i++) {
       int key = key_dist(key_rng);
       std::string s_key = "user" + std::to_string(key);
 
@@ -187,8 +197,16 @@ public:
 
         auto pending = update_stmt->PendingQuery(params);
         auto result = pending->Execute();
+        
         if (result->HasError()) {
           throw std::runtime_error("Update failed: " + result->GetError());
+        }
+
+        auto mat_res = (duckdb::MaterializedQueryResult *)result.get();
+        int64_t rows_updated = mat_res->GetValue(0, 0).GetValue<int64_t>();
+
+        if (rows_updated == 0) {
+          std::cout << "WARNING: 0 rows updated for key: " << s_key << std::endl;
         }
       }
       interval_iterations++;
@@ -196,7 +214,6 @@ public:
 
       if (batch_count >= BATCH_SIZE) {
         conn->Query("COMMIT;");
-        std::cout << "Forcing COMMIT..." << std::endl;
         conn->Query("BEGIN TRANSACTION;");
         batch_count = 0;
       }
@@ -265,17 +282,18 @@ public:
 PYBIND11_MODULE(ycsb_engine, m) {
   py::class_<YCSBRunner>(m, "YCSBRunner")
       .def(py::init<const std::string &, const std::string &,
-                    const std::string &, const std::string &, bool, int,
-                    const std::string &, int, int>(),
+              const std::string &, const std::string &, bool, int,
+              const std::string &, int, int, int>(),
            py::arg("db_path"), py::arg("dev_path"), py::arg("backend"),
            py::arg("fdp_map"), py::arg("use_nvmefs"),
            py::arg("memory_limit_mb"), py::arg("checkpoint_mode"),
-           py::arg("num_fields") = 10, py::arg("field_length") = 100)
+           py::arg("num_fields") = 10, py::arg("field_length") = 100, py::arg("batch_size") = 30)
       .def("run", &YCSBRunner::run,
            py::arg("iterations"), py::arg("row_count"),
            py::arg("duration_seconds"), py::arg("interval_seconds") = 0,
            py::arg("callback") = nullptr)
       .def("request_checkpoint", &YCSBRunner::request_checkpoint)
       .def("is_checkpoint_paused", &YCSBRunner::is_checkpoint_paused)
-      .def("release_checkpoint", &YCSBRunner::release_checkpoint);
+      .def("release_checkpoint", &YCSBRunner::release_checkpoint)
+      .def("sample_metrics", &YCSBRunner::sample_metrics);
 }

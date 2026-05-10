@@ -9,6 +9,24 @@ runner = None # YCSB Engine
 num_fields = 10
 field_length = 2000
 
+def nvmefs_db_size(db, label=""):
+    metrics = {}
+    if db.db_path.startswith("nvmefs://"):
+        result = db.execute("SELECT * FROM print_nvmefs_metrics();").fetchall()
+        for row in result:
+            key, val = row[0], row[1]
+            if val is None:
+                metrics[key] = 0
+            else:
+                try:
+                    metrics[key] = int(val)
+                except (ValueError, TypeError):
+                    metrics[key] = val  # leave non-numeric strings alone
+        db_gb = metrics.get("current_db_bytes", 0) / (1024 ** 3)
+        temp_gb = metrics.get("current_temp_bytes", 0) / (1024 ** 3)
+        print(f"[{label}] db={db_gb:.2f} GB  temp={temp_gb:.2f} GB")
+    return metrics
+
 def setup_ycsb_benchmark(dbs: list[Database], input_dir_path: str, scale_factor: int, checkpoint_mode: str = "auto"):
     db = dbs[0]
     input_file_path = os.path.join(input_dir_path, YCSB_BENCHMARK_NAME, f"ycsb-sf{scale_factor}.db")
@@ -17,9 +35,24 @@ def setup_ycsb_benchmark(dbs: list[Database], input_dir_path: str, scale_factor:
         print(f"ERROR: YCSB benchmark {input_file_path} does not exist")
     
     db.execute(f"ATTACH DATABASE '{input_file_path}' AS ycsb (READ_ONLY);")
-    db.execute("COPY FROM DATABASE ycsb TO bench;")
+
+    # Create the destination table in the bench DB, schema-only
+    db.execute("CREATE TABLE bench.usertable AS SELECT * FROM ycsb.usertable LIMIT 0;")
+
+    total_rows = scale_factor * 100000
+    chunk_size = 1_000_000   # see note below
+
+    for i, offset in enumerate(range(0, total_rows, chunk_size), start=1):
+        db.execute(f"""
+            INSERT INTO bench.usertable
+            SELECT * FROM ycsb.usertable
+            LIMIT {chunk_size} OFFSET {offset};
+        """)
+        nvmefs_db_size(db, f"after chunk {i} (pre-checkpoint)")
+        db.execute("CHECKPOINT bench;")
+        nvmefs_db_size(db, f"after chunk {i} (post-checkpoint)")
+
     db.execute("DETACH DATABASE ycsb;")
-    db.execute("CREATE UNIQUE INDEX ycsb_key_idx ON usertable(YCSB_KEY);")
     db.execute("PRAGMA disable_object_cache;")
 
     if checkpoint_mode == "manual":
@@ -42,10 +75,13 @@ def run_ycsb_epoch_benchmark(dbs: list[Database], scale_factor: int,
     if duration_seconds <= 0 and reps <= 0:
         raise ValueError("Error: YCSB received duration=0 and reps=0.")
 
-    iterations = 100000000 if duration_seconds > 0 else (reps * 1000000)
+    iterations = 10_000_000_000 if duration_seconds > 0 else (reps * 1_000_000)
     row_count = scale_factor * 100000
 
     use_nvmefs = db.db_path.startswith("nvmefs://")
+    print(f"DEBUG: db.db_path = {repr(db.db_path)}")
+    print(f"DEBUG: use_nvmefs computed = {db.db_path.startswith('nvmefs://')}")
+    print(f"DEBUG: use_nvmefs alt check = {db.db_path.startswith('nvmefs:')}")
     if runner is None:
         dev_path = getattr(db, "device_path", "")
         backend = getattr(db, "backend", "")

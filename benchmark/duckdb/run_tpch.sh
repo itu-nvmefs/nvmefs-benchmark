@@ -6,11 +6,11 @@
 DEVICE="/dev/nvme0"
 INPUT_DIR="/mnt/data/benchmark/"
 THREADS=64
-REPETITIONS=12
+REPETITIONS=10
 
 # WAF Drain
-ENABLE_DRAIN=0
-DRAIN_INTERVAL=660    # seconds of active work between drains
+ENABLE_DRAIN=1
+DRAIN_INTERVAL=1800    # seconds of active work between drains
 DRAIN_DURATION=660    # seconds to wait at each drain
 DRAIN_FINAL_DURATION=1800
 DRAIN_ARGS=()
@@ -19,7 +19,7 @@ if [ "$ENABLE_DRAIN" -eq 1 ]; then
 fi
 
 # Filler
-ENABLE_FILLER=0
+ENABLE_FILLER=1
 FILLER_ARGS=()
 if [ "$ENABLE_FILLER" -eq 1 ]; then
     FILLER_ARGS=(--filler)
