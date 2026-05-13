@@ -1,128 +1,83 @@
 import os
-import json
-from .ycsb_lib import ycsb_engine
-from database.database import Database
-from .coordinator import CppWorkerAdapter
+from database.database import Cursor
+from .ycsb_runner import run_ycsb_loop
 
 YCSB_BENCHMARK_NAME = "ycsb"
-runner = None # YCSB Engine
-num_fields = 10
-field_length = 2000
+NUM_FIELDS = 10
+FIELD_LENGTH = 2000
+BATCH_SIZE = 30
 
-def nvmefs_db_size(db, label=""):
-    metrics = {}
-    if db.db_path.startswith("nvmefs://"):
-        result = db.execute("SELECT * FROM print_nvmefs_metrics();").fetchall()
-        for row in result:
-            key, val = row[0], row[1]
-            if val is None:
-                metrics[key] = 0
-            else:
-                try:
-                    metrics[key] = int(val)
-                except (ValueError, TypeError):
-                    metrics[key] = val  # leave non-numeric strings alone
-        db_gb = metrics.get("current_db_bytes", 0) / (1024 ** 3)
-        temp_gb = metrics.get("current_temp_bytes", 0) / (1024 ** 3)
-        print(f"[{label}] db={db_gb:.2f} GB  temp={temp_gb:.2f} GB")
-    return metrics
 
-def setup_ycsb_benchmark(dbs: list[Database], input_dir_path: str, scale_factor: int, checkpoint_mode: str = "auto"):
-    db = dbs[0]
-    input_file_path = os.path.join(input_dir_path, YCSB_BENCHMARK_NAME, f"ycsb-sf{scale_factor}.db")
-    
+def setup_ycsb_benchmark(cursors: list[Cursor], input_dir_path: str,
+                         scale_factor: int, checkpoint_mode: str = "auto"):
+    c = cursors[0]
+    input_file_path = os.path.join(
+        input_dir_path, YCSB_BENCHMARK_NAME, f"ycsb-sf{scale_factor}.db"
+    )
     if not os.path.exists(input_file_path):
-        print(f"ERROR: YCSB benchmark {input_file_path} does not exist")
-    
-    db.execute(f"ATTACH DATABASE '{input_file_path}' AS ycsb (READ_ONLY);")
+        raise FileNotFoundError(f"YCSB seed DB not found: {input_file_path}")
 
-    # Create the destination table in the bench DB, schema-only
-    db.execute("CREATE TABLE bench.usertable AS SELECT * FROM ycsb.usertable LIMIT 0;")
+    c.execute(f"ATTACH DATABASE '{input_file_path}' AS ycsb_src (READ_ONLY);")
+    c.execute(
+        f"CREATE TABLE {c.db_name}.usertable AS "
+        f"SELECT * FROM ycsb_src.usertable LIMIT 0;"
+    )
 
-    total_rows = scale_factor * 100000
-    chunk_size = 1_000_000   # see note below
+    total_rows = scale_factor * 100_000
+    chunk_size = 1_000_000
 
-    for i, offset in enumerate(range(0, total_rows, chunk_size), start=1):
-        db.execute(f"""
-            INSERT INTO bench.usertable
-            SELECT * FROM ycsb.usertable
+    for offset in range(0, total_rows, chunk_size):
+        c.execute(f"""
+            INSERT INTO {c.db_name}.usertable
+            SELECT * FROM ycsb_src.usertable
             LIMIT {chunk_size} OFFSET {offset};
         """)
-        nvmefs_db_size(db, f"after chunk {i} (pre-checkpoint)")
-        db.execute("CHECKPOINT bench;")
-        nvmefs_db_size(db, f"after chunk {i} (post-checkpoint)")
+        c.execute(f"CHECKPOINT {c.db_name};")
 
-    db.execute("DETACH DATABASE ycsb;")
-    db.execute("PRAGMA disable_object_cache;")
+    c.execute("DETACH DATABASE ycsb_src;")
+    c.execute("PRAGMA disable_object_cache;")
 
     if checkpoint_mode == "manual":
-        # Disable auto-checkpointing by setting it incredibly high
-        db.execute("PRAGMA wal_autocheckpoint='1GB';")
-        print("Manual checkpoint")
-    else: 
-        # DuckDB default for auto-checkpointing
-        db.execute("PRAGMA wal_autocheckpoint='16MB';")
-        print("Auto checkpoint")
+        c.execute("PRAGMA wal_autocheckpoint='4GB';")
+        print("YCSB: manual checkpoint (4GB)")
+    else:
+        c.execute("PRAGMA wal_autocheckpoint='16MB';")
+        print("YCSB: auto checkpoint (16MB)")
 
-def run_ycsb_epoch_benchmark(dbs: list[Database], scale_factor: int,
+
+def run_ycsb_epoch_benchmark(cursors: list[Cursor], scale_factor: int,
                              duration_seconds: int = 0, reps: int = 0,
                              checkpoint_mode: str = "auto",
                              interval_seconds: int = 660,
-                             coordinator=None, output_handle=None):
-    global runner
-    db = dbs[0]
+                             coordinator=None, output_handle=None,
+                             worker_handle=None):
+    c = cursors[0]
 
     if duration_seconds <= 0 and reps <= 0:
-        raise ValueError("Error: YCSB received duration=0 and reps=0.")
+        raise ValueError("YCSB needs either duration_seconds or reps.")
 
-    iterations = 10_000_000_000 if duration_seconds > 0 else (reps * 1_000_000)
-    row_count = scale_factor * 100000
-
-    use_nvmefs = db.db_path.startswith("nvmefs://")
-    print(f"DEBUG: db.db_path = {repr(db.db_path)}")
-    print(f"DEBUG: use_nvmefs computed = {db.db_path.startswith('nvmefs://')}")
-    print(f"DEBUG: use_nvmefs alt check = {db.db_path.startswith('nvmefs:')}")
-    if runner is None:
-        dev_path = getattr(db, "device_path", "")
-        backend = getattr(db, "backend", "")
-        use_fdp = getattr(db, "use_fdp", False)
-        fdp_map = db.config.get_fdp_mapping() if use_fdp else ""
-        memory_limit = getattr(db, "memory", 1000)
-
-        try:
-            db.close()
-        except Exception:
-            pass
-
-        runner = ycsb_engine.YCSBRunner(
-            db.db_path, dev_path, backend, fdp_map, use_nvmefs,
-            memory_limit, checkpoint_mode, num_fields, field_length,
-        )
-
-    adapter = None
-    if coordinator is not None:
-        adapter = CppWorkerAdapter(runner, name="ycsb")
-        coordinator.add_worker(adapter)
-
-    result_rows = []
-
-    def results_callback(offset_s, interval_ms, iters, metrics):
-        throughput = (iters / interval_ms) * 1000 if interval_ms > 0 else 0
-        metrics_json = json.dumps(dict(metrics))
-        row = f"ycsb_workload_a;{offset_s:.2f};{interval_ms:.2f};{iters};{throughput:.2f};{metrics_json}\n"
-        
-        result_rows.append(row)
-        if output_handle is not None:
-            output_handle.write(row)
-            output_handle.flush()
+    iterations = 10_000_000_000 if duration_seconds > 0 else reps * 1_000_000
+    row_count = scale_factor * 100_000
 
     try:
-        runner.run(iterations, row_count, duration_seconds, interval_seconds, results_callback)
+        rows = run_ycsb_loop(
+            c,
+            num_fields=NUM_FIELDS,
+            field_length=FIELD_LENGTH,
+            batch_size=BATCH_SIZE,
+            row_count=row_count,
+            iterations=iterations,
+            duration_seconds=duration_seconds,
+            interval_seconds=interval_seconds,
+            checkpoint_mode=checkpoint_mode,
+            worker_handle=worker_handle,
+            output_handle=output_handle,
+        )
     except Exception as e:
-        print(f"YCSB failed due to {e}")
-        result_rows.append(f"ycsb_workload_a;FAIL;FAIL;FAIL;FAIL;{{}}\n")
-    finally:
-        if adapter is not None and coordinator is not None:
-            coordinator.remove_worker(adapter)
+        print(f"YCSB failed: {e}")
+        rows = [f"ycsb_workload_a;FAIL;FAIL;FAIL;FAIL;{{}}\n"]
+        if output_handle is not None:
+            output_handle.write(rows[0])
+            output_handle.flush()
 
-    return {"ycsb": result_rows}
+    return {"ycsb": rows}
