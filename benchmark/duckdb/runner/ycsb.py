@@ -7,7 +7,6 @@ NUM_FIELDS = 10
 FIELD_LENGTH = 2000
 BATCH_SIZE = 30
 
-
 def setup_ycsb_benchmark(cursors: list[Cursor], input_dir_path: str,
                          scale_factor: int, checkpoint_mode: str = "auto"):
     c = cursors[0]

@@ -29,7 +29,6 @@ def run_tpch_epoch_benchmark(cursors: list[Cursor], scale_factor: int,
     for query_nr in range(1, 23):
         try:
             with QueryProfiler(c, f"tpch-{query_nr}", use_nvmefs) as profiler:
-                print(f"Executing tpch({query_nr});")
                 c.execute(f"PRAGMA tpch({query_nr});").fetchall()
             metrics_json = json.dumps(profiler.nvmefs_metrics)
             row = f"{query_nr};{profiler.latency_ms:.2f};{metrics_json}\n"

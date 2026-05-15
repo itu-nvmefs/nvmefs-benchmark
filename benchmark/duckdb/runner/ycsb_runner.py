@@ -70,29 +70,36 @@ def run_ycsb_loop(cursor: Cursor,
     run_start = time.monotonic()
     interval_start = run_start
     interval_iters = 0
+    interval_paused_time = 0.0
     batch_count = 0
     batch_params: list[list] = []
 
     cursor.execute("BEGIN TRANSACTION;")
 
     def emit_interval(now: float):
-        nonlocal interval_start, interval_iters
+        nonlocal interval_start, interval_iters, interval_paused_time
         if interval_iters == 0:
             return
-        interval_ms = (now - interval_start) * 1000.0
+            
+        chronological_ms = (now - interval_start) * 1000.0
+        active_ms = chronological_ms - (interval_paused_time * 1000.0)
+        
         offset_s = interval_start - run_start
-        throughput = (interval_iters / interval_ms) * 1000.0 if interval_ms > 0 else 0.0
+        throughput = (interval_iters / active_ms) * 1000.0 if active_ms > 0 else 0.0
+        
         metrics = _sample_metrics(cursor)
         row = (
-            f"ycsb_workload_a;{offset_s:.2f};{interval_ms:.2f};"
+            f"ycsb_workload_a;{offset_s:.2f};{active_ms:.2f};"
             f"{interval_iters};{throughput:.2f};{json.dumps(metrics)}\n"
         )
         rows.append(row)
         if output_handle is not None:
             output_handle.write(row)
             output_handle.flush()
-        interval_start = now
+            
+        interval_start = time.monotonic()
         interval_iters = 0
+        interval_paused_time = 0.0  # Reset the pause accumulator
 
     try:
         for i in range(iterations):
@@ -112,11 +119,14 @@ def run_ycsb_loop(cursor: Cursor,
                 batch_count = 0
 
             if i > 0 and i % 500 == 0:
+                if worker_handle is not None and hasattr(worker_handle, "checkpoint_if_requested"):
+                    pause_start = time.monotonic()
+                    worker_handle.checkpoint_if_requested(f"ycsb-op{i}")
+                    interval_paused_time += (time.monotonic() - pause_start)  # Add to accumulator
+                
                 now = time.monotonic()
 
-                if worker_handle is not None and hasattr(worker_handle, "checkpoint_if_requested"):
-                    worker_handle.checkpoint_if_requested(f"ycsb-op{i}")
-
+                # Calculate interval based on chronological time
                 if interval_seconds > 0 and (now - interval_start) >= interval_seconds:
                     emit_interval(now)
 

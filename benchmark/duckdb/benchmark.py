@@ -8,22 +8,27 @@ from datetime import datetime
 from threading import Thread
 from runner.coordinator import WAFCheckpoint
 from runner.factory import create_benchmark_runner, get_namespace_count, derive_db_names
-from device.nvme import NvmeDevice, setup_device, calculate_waf, NvmeDeviceNamespace, fill_namespace_with_data
+from device.nvme import NvmeDevice, setup_device, calculate_waf, NvmeDeviceNamespace, fill_namespace_with_data, parse_fdp_handles
 
 
 def prepare_setup_func(args: Arguments, namespace_identities: list):
     device = NvmeDevice(args.device) if args.device else None
+    target_nsid = 2 if args.filler else 1
 
     def setup_nvme():
+        fdp_handles = parse_fdp_handles(args.fdp_mapping) if args.use_fdp else []
+        
+
         if not args.skip_reset:
             workload_ns, _ = setup_device(
-                device, namespace_id=1, enable_fdp=args.use_fdp,
+                device, namespace_id=target_nsid, enable_fdp=args.use_fdp,
                 size_blocks=args.namespace_size, precondition=args.precondition,
                 fio_file=args.fio_file, settle_seconds=args.settle_seconds,
                 dsm_after_precondition=args.dsm_after_preconditioning,
+                fdp_handles=fdp_handles
             )
         else:
-            workload_ns = NvmeDeviceNamespace(device.device_path, 1, args.namespace_size)
+            workload_ns = NvmeDeviceNamespace(device.device_path, target_nsid, args.namespace_size)
         time.sleep(5)
 
         db_names = derive_db_names(namespace_identities)
@@ -47,7 +52,7 @@ def prepare_setup_func(args: Arguments, namespace_identities: list):
             fdp_mapping=args.fdp_mapping,
             memory=args.get_memory_limit(),
             threads=args.threads,
-            ns_id=1,
+            ns_id=target_nsid,
             extension_path=args.extension_path,
             db_configs=db_configs_dict,
         )
@@ -62,7 +67,7 @@ def prepare_setup_func(args: Arguments, namespace_identities: list):
 
     def setup_normal():
         _, mount_path = setup_device(
-            device, namespace_id=1, should_mount=args.should_mount,
+            device, namespace_id=target_nsid, should_mount=args.should_mount,
             size_blocks=args.namespace_size, precondition=args.precondition,
             fio_file=args.fio_file, settle_seconds=args.settle_seconds,
             dsm_after_precondition=args.dsm_after_preconditioning,
@@ -224,6 +229,18 @@ if __name__ == "__main__":
     if args.use_fdp:
         initial_device.enable_fdp()
 
+    if args.filler and not args.skip_reset and initial_device is not None:
+        filler_size = initial_device.unallocated_number_of_blocks - args.namespace_size
+        if filler_size <= 0:
+            raise ValueError(
+                f"Workload namespace ({args.namespace_size} blocks) exceeds device capacity."
+            )
+        filler_ns = initial_device.create_filler_namespace(
+                                        namespace_id=1, size_blocks=filler_size,
+                                        enable_fdp=args.use_fdp, phndls="0",)
+        fill_namespace_with_data(filler_ns, passes=2)
+
+
     setup_device_and_db = prepare_setup_func(args, namespace_identities)
     target_dir, base_name, device_output_file = generate_filenames(args)
     run_with_duration = args.duration > 0
@@ -235,18 +252,6 @@ if __name__ == "__main__":
     for count in benchmark_ns_counts:
         cursor_chunks.append(cursors[current : current + count])
         current += count
-
-    if args.filler:
-        filler_size = initial_device.unallocated_number_of_blocks - args.namespace_size
-        if filler_size <= 0:
-            raise ValueError(
-                f"Workload namespace ({args.namespace_size} blocks) exceeds device capacity."
-            )
-        filler_ns = initial_device.create_filler_namespace(
-            namespace_id=2, size_blocks=filler_size,
-            enable_fdp=args.use_fdp, phndls="0",
-        )
-        fill_namespace_with_data(filler_ns)
 
     coordinator = None
     if args.drain:

@@ -23,7 +23,7 @@ else
 fi
 
 # WAF Drain
-ENABLE_DRAIN=0
+ENABLE_DRAIN=1
 DRAIN_INTERVAL=1800
 DRAIN_DURATION=660
 DRAIN_FINAL_DURATION=1800
@@ -32,7 +32,7 @@ if [ "$ENABLE_DRAIN" -eq 1 ]; then
     DRAIN_ARGS=(--drain --drain-interval "$DRAIN_INTERVAL" --drain-duration "$DRAIN_DURATION" --drain-final-duration "$DRAIN_FINAL_DURATION")
 fi
 
-ENABLE_FILLER=0
+ENABLE_FILLER=1
 FILLER_ARGS=()
 if [ "$ENABLE_FILLER" -eq 1 ]; then
     FILLER_ARGS=(--filler)
@@ -50,7 +50,7 @@ declare -A FDP_MAPPINGS=(
     ["fully-isolated"]="tpch.db:1,tpch.wal:2,ycsb.db:3,ycsb.wal:4,.tmp:5"
 )
 
-FDP_STRATEGIES=("nofdp")
+FDP_STRATEGIES=("nofdp") # "fully-isolated"
 
 # ==========================================
 # Environment Setup
@@ -74,13 +74,12 @@ fi
 # HTAP Configs: TPCH_SF YCSB_SF MEM_LIMIT TPCH_DB_GB YCSB_DB_GB TEMP_GB DURATION_MIN
 # Namespace size is computed as TPCH_DB + YCSB_DB + 2 * WAL(1GB) + TEMP + ~1% slack.
 CONFIGS=(
-    "100 5 38000 400 400 200 480"
+    "3000 200 70000 900 400 250 480"
+    # "3000 200 60000 900 400 400 30"
 )
 
 CHECKPOINT_MODES=("auto")
-PRECOND_STATES=(0)
-
-FIO_FILE="fio/uniform.fio"
+PRECOND_STATES=(1)
 SETTLE_SECONDS=900
 
 SUITE_START_TIMESTAMP=$(date +%s)
@@ -113,7 +112,7 @@ for config in "${CONFIGS[@]}"; do
 
     # Compute total namespace size: DBs + WALs + temp, with a small slack margin.
     NS_GB=$(( TPCH_DB_GB + YCSB_DB_GB + (NUM_DBS * WAL_GB_PER_DB) + TEMP_SIZE ))
-    NS_GB=$(( NS_GB + (NS_GB / 25) ))   # +1% slack
+    NS_GB=$(( NS_GB + (NS_GB / 100) ))   # +1% slack
     WORKLOAD_NS_SIZE=$(( NS_GB * 1024 * 1024 * 1024 / 4096 ))
 
     DB_CONFIGS="tpch:${TPCH_DB_GB}GB,ycsb:${YCSB_DB_GB}GB"
@@ -121,7 +120,7 @@ for config in "${CONFIGS[@]}"; do
     for precond in "${PRECOND_STATES[@]}"; do
         if [ "$precond" -eq 1 ]; then
             PRECOND_LABEL="precond"
-            PRECOND_ARGS=(--precondition --fio_file "$FIO_FILE" --settle_seconds "$SETTLE_SECONDS" --dsm_after_preconditioning)
+            PRECOND_ARGS=(--precondition --settle_seconds "$SETTLE_SECONDS" --dsm_after_preconditioning)
         else
             PRECOND_LABEL="no-precond"
             PRECOND_ARGS=()

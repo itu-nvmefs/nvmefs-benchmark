@@ -76,10 +76,10 @@ fi
 # Workload Configurations
 # ==========================================
 
-# TPCH Configs: SF MEM_LIMIT WORKLOAD_SIZE_GB TEMP_SIZE_GB
+# TPCH Configs: SF MEM_LIMIT DB_GB TEMP_SIZE_GB
 CONFIGS=(
-    "1000 12000 385 90"
-    # "3000 38000 1150 270"
+    "1000 12000 300 90"
+    # "3000 38000 900 270"
 )
 
 PRECOND_STATES=(0)
@@ -95,8 +95,12 @@ SUITE_START_STR=$(date '+%Y-%m-%d %H:%M:%S')
 # TPC-H Suite
 # ==========================================
 for config in "${CONFIGS[@]}"; do
-    read -r TPCH_SF MEM_LIMIT WORKLOAD_GB TEMP_SIZE <<< "$config"
-    WORKLOAD_NS_SIZE=$(( WORKLOAD_GB * 1000 * 1000 * 1000 / 4096 ))
+    read -r TPCH_SF MEM_LIMIT DB_GB TEMP_SIZE <<< "$config"
+    NS_GB=$(( DB_GB + 1 + TEMP_SIZE ))
+    NS_GB=$(( NS_GB + (NS_GB / 100) ))   # +1% slack
+    WORKLOAD_NS_SIZE=$(( NS_GB * 1024 * 1024 * 1024 / 4096 ))
+
+    DB_CONFIGS="tpch:${DB_GB}GB"
 
     for precond in "${PRECOND_STATES[@]}"; do
         if [ "$precond" -eq 1 ]; then
@@ -129,6 +133,7 @@ for config in "${CONFIGS[@]}"; do
                 --threads $THREADS \
                 --namespace_size $WORKLOAD_NS_SIZE \
                 --max_temp_size $TEMP_SIZE \
+                --db_configs "$DB_CONFIGS" \
                 "${BACKEND_ARGS[@]}" \
                 "${FILLER_ARGS[@]}" \
                 "${PRECOND_ARGS[@]}" \

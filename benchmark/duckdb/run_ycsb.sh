@@ -12,7 +12,7 @@ DUCKDB_PATH="$HOME/nvmefs2"
 EXTENSION_PATH="$DUCKDB_PATH/build/release/extension/nvmefs/nvmefs.duckdb_extension"
 VENV_DIR=".venv_v2_new"
 
-USE_MOUNT=1
+USE_MOUNT=0
 BACKEND_ARGS=()
 if [ "$USE_MOUNT" -eq 1 ]; then
     BACKEND_LABEL="mount"
@@ -23,7 +23,7 @@ else
 fi
 
 # WAF Drain
-ENABLE_DRAIN=1
+ENABLE_DRAIN=0
 DRAIN_INTERVAL=1800
 DRAIN_DURATION=660
 DRAIN_FINAL_DURATION=1800
@@ -32,7 +32,7 @@ if [ "$ENABLE_DRAIN" -eq 1 ]; then
     DRAIN_ARGS=(--drain --drain-interval "$DRAIN_INTERVAL" --drain-duration "$DRAIN_DURATION" --drain-final-duration "$DRAIN_FINAL_DURATION")
 fi
 
-ENABLE_FILLER=1
+ENABLE_FILLER=0
 FILLER_ARGS=()
 if [ "$ENABLE_FILLER" -eq 1 ]; then
     FILLER_ARGS=(--filler)
@@ -68,9 +68,9 @@ fi
 # Workload Configurations
 # ==========================================
 
-# YCSB Configs: SF MEM_LIMIT NAMESPACE_GB TEMP_GB DURATION_MIN
+# YCSB Configs: SF MEM_LIMIT DB_GB TEMP_GB DURATION_MIN
 CONFIGS=(
-    "200 45000 400 5 480"
+    "200 45000 395 5 480"
 )
 
 CHECKPOINT_MODES=("auto")
@@ -102,8 +102,12 @@ done
 # YCSB Suite
 # ==========================================
 for config in "${CONFIGS[@]}"; do
-    read -r YCSB_SF MEM_LIMIT WORKLOAD_GB TEMP_SIZE DURATION_MIN <<< "$config"
-    WORKLOAD_NS_SIZE=$(( WORKLOAD_GB * 1000 * 1000 * 1000 / 4096 ))
+    read -r YCSB_SF MEM_LIMIT DB_GB TEMP_SIZE DURATION_MIN <<< "$config"
+    NS_GB=$(( DB_GB + 1 + TEMP_SIZE ))
+    NS_GB=$(( NS_GB + (NS_GB / 100) ))   # +1% slack
+    WORKLOAD_NS_SIZE=$(( NS_GB * 1024 * 1024 * 1024 / 4096 ))
+
+    DB_CONFIGS="ycsb:${DB_GB}GB"
 
     for precond in "${PRECOND_STATES[@]}"; do
         if [ "$precond" -eq 1 ]; then
@@ -137,6 +141,7 @@ for config in "${CONFIGS[@]}"; do
                     --threads $THREADS \
                     --namespace_size $WORKLOAD_NS_SIZE \
                     --max_temp_size $TEMP_SIZE \
+                    --db_configs "$DB_CONFIGS" \
                     --checkpoint_mode "$ckpt" \
                     "${BACKEND_ARGS[@]}" \
                     "${FILLER_ARGS[@]}" \

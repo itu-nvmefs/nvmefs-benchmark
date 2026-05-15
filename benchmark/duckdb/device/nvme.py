@@ -35,7 +35,8 @@ class NvmeDeviceNamespace:
         """
         Deallocates all blocks on the device
         """
-        run_cmd(f"nvme dsm {self.device_path} --namespace-id={self.namespace_id} --ad --slbs=0 --blocks={self.number_of_blocks}")
+        device_ns_path = self.get_device_path()
+        run_cmd(f"nvme dsm {device_ns_path} --ad --slbs=0 --blocks={self.number_of_blocks}")
     
     def get_generic_device_path(self):
         """
@@ -155,24 +156,17 @@ class NvmeDevice:
                         namespace_id: int, enable_fdp: bool = False, 
                         should_mount: bool = False, endgrp_id: int = 1, size_blocks: int = 0, 
                         precondition: bool = False, fio_file: str = None, settle_seconds: int = 0, 
-                        dsm_after_precondition: bool = True):
-        """
-        Creates a namespace on the device and attaches it
-
-        :param namespace_id: The ID of the namespace to create
-        :param enable_fdp: Whether to enable flexible data placement
-        :param should_mount: Whether to mount the namespace
-        :param endgrp_id: The ID of the endurance group on the device
-        :param size_blocks: The number of blocks to allocate on the device
-        :param precondition: Whether to sequentially fill the device to ensure a consistent state
-        """
-
+                        dsm_after_precondition: bool = True, fdp_handles: list = None):
         # Create a namespace on the device
         ns_number_of_blocks = size_blocks if size_blocks > 0 else self.unallocated_number_of_blocks
         print(f"Creating namespace {namespace_id} with {ns_number_of_blocks} blocks")
         
         if enable_fdp:
-            run_cmd(f"nvme create-ns {self.device_path} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks} --flbas=0 --endg-id={endgrp_id} --nphndls=4 --phndls=1,2,3,4")
+            handles = fdp_handles if fdp_handles else [1, 2, 3, 4]
+            nphndls = len(handles)
+            phndls = ",".join(str(h) for h in handles)
+            print(f"Attaching {nphndls} placement handle(s): {phndls}")
+            run_cmd(f"nvme create-ns {self.device_path} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks} --flbas=0 --endg-id={endgrp_id} --nphndls={nphndls} --phndls={phndls}")
         else: 
             run_cmd(f"nvme create-ns {self.device_path} --nsze={ns_number_of_blocks} --ncap={ns_number_of_blocks} --flbas=0")
 
@@ -199,31 +193,64 @@ class NvmeDevice:
                 mount_path = match.group(1)
                 new_namespace.is_mounted = True
 
+        subprocess.run("udevadm settle", shell=True, stderr=subprocess.DEVNULL)
+        time.sleep(5)
+
         # Sequential Fill + Random Scramble/Writes
         if precondition:
             run_cmd("rm -f steadystate_iops.*")
 
             precondition_path = new_namespace.get_device_path()
+            SEQ_PASSES = 2
+            RANDOM_RUNTIME_S = 1800 # 30 seconds
             
             if should_mount and mount_path is not None:
-                print(f"Filesystem Preconditioning on {mount_path}...")
-                for i in range(4): 
-                    print(f"Preconditioning {i}...")
-                    run_cmd(f"fio --name=seq-fill-{i} --directory={mount_path} --rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio --fallocate=none --fill_device=1 --size=100%")
-                run_cmd(f"fio --name=random-writes --directory={mount_path} --rw=randwrite --bs=4k --iodepth=64 --direct=1 --ioengine=libaio --time_based --runtime=1800 --write_iops_log=steadystate --log_avg_msec=60000")
-                run_cmd(f"rm -f {mount_path}/seq-fill.* {mount_path}/random-writes.*")
+                print(f"Filesystem preconditioning on {mount_path}...")
+                for i in range(SEQ_PASSES):
+                    print(f"Sequential fill pass {i + 1}/{SEQ_PASSES}...")
+                    run_cmd(
+                        f"fio --name=seq-fill-{i} --directory={mount_path} "
+                        f"--rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio "
+                        f"--fallocate=none --fill_device=1 --size=100% "
+                        f"--refill_buffers=1 --scramble_buffers=1"
+                    )
+                    run_cmd(f"rm -f {mount_path}/seq-fill-{i}.*")
+
+                print(f"Random-write precondition ({RANDOM_RUNTIME_S}s)...")
+                run_cmd(
+                    f"fio --name=random-writes --directory={mount_path} "
+                    f"--rw=randwrite --bs=4k --iodepth=64 --direct=1 --ioengine=libaio "
+                    f"--time_based --runtime={RANDOM_RUNTIME_S} --size=100% "
+                    f"--refill_buffers=1 --scramble_buffers=1 "
+                    f"--write_iops_log=steadystate_uniform --log_avg_msec=60000"
+                )
+                run_cmd(f"rm -f {mount_path}/random-writes.*")
+
             else:
-                if fio_file and os.path.exists(fio_file):
-                    print(f"Preconditioning {precondition_path} using {fio_file}...")
-                    run_cmd(f"fio {fio_file} --filename={precondition_path}")
-                else:
-                    raise FileNotFoundError(f"FIO file not found: {fio_file}")
-        
+                print(f"Block-device preconditioning on {precondition_path}...")
+                for i in range(SEQ_PASSES):
+                    print(f"  Sequential fill pass {i + 1}/{SEQ_PASSES}...")
+                    run_cmd(
+                        f"fio --name=seq-fill-{i} --filename={precondition_path} "
+                        f"--rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio "
+                        f"--refill_buffers=1 --scramble_buffers=1 --size=100%"
+                )
+
+                print(f"Random-write precondition ({RANDOM_RUNTIME_S}s)...")
+                run_cmd(
+                    f"fio --name=random-writes --filename={precondition_path} "
+                    f"--rw=randwrite --bs=4k --iodepth=64 --direct=1 --ioengine=libaio "
+                    f"--time_based --runtime={RANDOM_RUNTIME_S} --size=100% "
+                    f"--refill_buffers=1 --scramble_buffers=1 "
+                    f"--write_iops_log=steadystate_uniform --log_avg_msec=60000"
+                )
+
             if settle_seconds > 0:
                 print(f"Waiting {settle_seconds}s for FTL to settle...")
                 time.sleep(settle_seconds)
-        
+
             if dsm_after_precondition:
+                print(f"DSM on workload namespace {new_namespace.namespace_id}...")
                 new_namespace.deallocate_blocks()
 
         self.namespaces.append(new_namespace)
@@ -296,23 +323,23 @@ class NvmeDevice:
 
         return NvmeDeviceNamespace(self.device_path, namespace_id, size_blocks, is_mounted=False)
 
-def fill_namespace_with_data(namespace: NvmeDeviceNamespace):
-    """
-    One-time sequential fill of a namespace with valid, incompressible data.
-    """
+def fill_namespace_with_data(namespace: NvmeDeviceNamespace, passes: int = 2):
     device_path = namespace.get_device_path()
-    print(f"Filling {device_path} with valid data...")
+    print(f"Filling {device_path} ({passes} pass(es))...")
 
     subprocess.run("udevadm settle", shell=True, stderr=subprocess.DEVNULL)
     time.sleep(2)
-        
-    fill_cmd = (
-    f"fio --name=filler --filename={device_path} "
-    f"--rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio "
-    f"--refill_buffers=1 --scramble_buffers=1 --size=100%"
-    )
-    subprocess.run(fill_cmd, shell=True, check=True) 
-    print(f"Filler namespace {namespace.namespace_id} ready.")
+
+    for i in range(passes):
+        print(f"  Pass {i + 1}/{passes}...")
+        fill_cmd = (
+            f"fio --name=filler-pass{i} --filename={device_path} "
+            f"--rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio "
+            f"--refill_buffers=1 --scramble_buffers=1 --size=100%"
+        )
+        subprocess.run(fill_cmd, shell=True, check=True)
+
+    print(f"Filler namespace {namespace.namespace_id} ready ({passes} passes complete).")
 
 def calculate_waf(host_written_bytes, media_written_bytes):
     """
@@ -325,7 +352,7 @@ def calculate_waf(host_written_bytes, media_written_bytes):
 def setup_device(device: NvmeDevice, namespace_id: int = 1, enable_fdp: bool = False, should_mount: bool = False,
                  endgrp_id: int = 1, size_blocks: int = 0, precondition: bool = False,
                  fio_file: str = None, settle_seconds: int = 0,
-                 dsm_after_precondition: bool = False) -> tuple[NvmeDeviceNamespace, str | Any | None]:
+                 dsm_after_precondition: bool = False, fdp_handles: list = None) -> tuple[NvmeDeviceNamespace, str | Any | None]:
     """
     Create a workload namespace and optionally precondition it.
     """
@@ -342,6 +369,7 @@ def setup_device(device: NvmeDevice, namespace_id: int = 1, enable_fdp: bool = F
         fio_file=fio_file,
         settle_seconds=settle_seconds,
         dsm_after_precondition=dsm_after_precondition,
+        fdp_handles=fdp_handles,
     )
 
     return new_namespace, mount_path
@@ -384,3 +412,22 @@ def verify_steady_state(log_file="steadystate_iops.1.log", evaluation_window_sam
     else:
         print("The NVMe Drive is not in a steady state")
 
+def parse_fdp_handles(mapping: str) -> list[int]:
+    """
+    Extract sorted, unique non-zero RUH IDs from a mapping string.
+    'tpch.db:1,tpch.wal:2,ycsb.db:3,.tmp:5' -> [1, 2, 3, 5]
+    RUH 0 is the default and is always available; don't include it.
+    """
+    if not mapping:
+        return []
+    handles = set()
+    for pair in mapping.split(','):
+        kv = pair.split(':')
+        if len(kv) == 2:
+            try:
+                ruh = int(kv[1].strip())
+                if ruh > 0:
+                    handles.add(ruh)
+            except ValueError:
+                pass
+    return sorted(handles)
