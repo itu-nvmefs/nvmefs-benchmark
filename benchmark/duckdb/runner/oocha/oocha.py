@@ -5,8 +5,9 @@ from database.database import Database
 
 OOCHA_SPILL_BENCHMARK_NAME = "oocha-spill"
 
-def setup_oocha_spill_benchmark(db: Database, input_dir_path: str, scale_factor: int):
+def setup_oocha_spill_benchmark(dbs: list[Database], input_dir_path: str, scale_factor: int):
     input_file_path = os.path.join(input_dir_path, f"oocha-{scale_factor}.db")
+    db = dbs[0]
 
     db.execute(f"ATTACH DATABASE '{input_file_path}' AS oocha;")
     db.execute("COPY FROM DATABASE oocha TO bench;")
@@ -15,7 +16,8 @@ def setup_oocha_spill_benchmark(db: Database, input_dir_path: str, scale_factor:
     db.execute("PRAGMA disable_object_cache;")
 
 
-def run_oocha_spill_epoch_benchmark(db: Database, scale_factor: int):
+def run_oocha_spill_epoch_benchmark(dbs: list[Database], scale_factor: int):
+    db = dbs[0]
 
     start = time.perf_counter()
     db.query(f"""SELECT count(*) FROM (SELECT distinct(l_orderkey) FROM lineitem)""")
@@ -24,11 +26,13 @@ def run_oocha_spill_epoch_benchmark(db: Database, scale_factor: int):
     # Get query elapsed time in milliseconds
     query_elapsed = (end - start) * 1000
 
-    return [f"{query_elapsed}\n"]
+    return {OOCHA_SPILL_BENCHMARK_NAME: [f"{query_elapsed}\n"]}
 
 OOCHA_BENCHMARK_NAME = "oocha"
-def setup_oocha_benchmark(db: Database, input_dir_path: str, scale_factor: int):
+
+def setup_oocha_benchmark(dbs: list[Database], input_dir_path: str, scale_factor: int):
     input_file_path = os.path.join(input_dir_path, f"oocha-{scale_factor}.db")
+    db = dbs[0]
 
     db.execute(f"ATTACH DATABASE '{input_file_path}' AS oocha;")
     db.execute("COPY FROM DATABASE oocha TO bench;")
@@ -63,8 +67,8 @@ def _getcounts(queries_dir: str, scale_factor: int):
 
     return query_counts
 
-def run_oocha_epoch_benchmark(db: Database, scale_factor: int):
-
+def run_oocha_epoch_benchmark(dbs: list[Database], scale_factor: int):
+    db = dbs[0]
     results = []
     queries_dir = "./runner/oocha/queries"
     queries = _getqueries(queries_dir)
@@ -84,4 +88,4 @@ def run_oocha_epoch_benchmark(db: Database, scale_factor: int):
         query_elapsed = (end - start) * 1000
         results.append(f"{grouping};{wide};{query_elapsed}\n")
 
-    return results
+    return {OOCHA_BENCHMARK_NAME: results}

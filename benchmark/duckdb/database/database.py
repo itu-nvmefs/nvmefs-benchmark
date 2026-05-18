@@ -1,207 +1,139 @@
 import os
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import duckdb
+
 
 @dataclass
 class ConnectionConfig:
     device: str = ""
     backend: str = ""
     use_fdp: bool = False
-    fdp_strategy: str = ""
+    fdp_mapping: str = ""
     memory: int = 0
     threads: int = 0
-
-    def get_fdp_mapping(self) -> str:
-        mappings = {
-            "baseline": ".db:0,.wal:0,.tmp:0",
-            "temp-isolated": ".db:0,.wal:0,.tmp:1",
-            "wal-isolated": ".db:0,.wal:1,.tmp:0",
-            "fully-isolated": ".db:0,.tmp:1,.wal:2"
-        }
-        return mappings.get(self.fdp_strategy.lower(), mappings["baseline"])
+    ns_id: int = 1
+    extension_path: str = ""
+    db_configs: dict = field(default_factory=dict)
 
 
-class Database(ABC):
-
-    def __init__(self, db_path: str, threads:int, memory: int):
-        self.db_path = db_path
-        self.connection: duckdb.DuckDBPyConnection = None
-        self.memory = memory
+class Database:
+    def __init__(self, threads: int, memory: int, temp_size: int,
+                 config: ConnectionConfig = None):
         self.threads = threads
-        self._setup()
-    
-    @abstractmethod
-    def _setup(self):
-        pass
+        self.memory = memory
+        self.temp_size = temp_size
+        self.config = config
+        self.connection = duckdb.connect(config={
+            "allow_unsigned_extensions": "true",
+            "max_temp_directory_size": f"{temp_size}GB",
+            "memory_limit": f"{memory}MB",
+            "threads": threads,
+        })
+        self.attached: list[str] = []
 
-    @property
-    def get_is_connected(self):
-        return self.connection is not None
+        if config and config.device and config.extension_path:
+            self._activate_nvmefs()
 
-    def _connect(self):
-        if not self.get_is_connected:
-            self.connection: duckdb.DuckDBPyConnection = duckdb.connect(
-                config={"allow_unsigned_extensions": "true",
-                        "max_temp_directory_size": "150GB",
-                        "memory_limit": f"{self.memory}MB",
-                        "threads": self.threads
-                    }
-                )
+    def _activate_nvmefs(self):
+        ext = os.path.abspath(self.config.extension_path)
+        self.connection.install_extension(ext)
+        self.connection.load_extension(ext)
 
-    def get_cursor(self):
-        """Helper to get a cursor for concurrent threads"""
-        return self.connection.cursor()
+        secret_name = f"nvmefs_{self.config.ns_id}"
+        secret = (
+            f"CREATE OR REPLACE PERSISTENT SECRET {secret_name} (\n"
+            f"  TYPE NVMEFS,\n"
+            f"  nvme_device_path '{self.config.device}',\n"
+            f"  backend          '{self.config.backend}',\n"
+            f"  meta             'use_default_async|no_memory_manager',\n"
+            f"  use_fdp          '{'on' if self.config.use_fdp else 'off'}'"
+        )
+        if self.config.use_fdp and self.config.fdp_mapping:
+            secret += f",\n  fdp_mapping '{self.config.fdp_mapping}'"
+        if self.config.db_configs:
+            cfg = ",".join(f"{n}:{s}GB" for n, s in self.config.db_configs.items())
+            secret += f",\n  db_configs '{cfg}'"
+        secret += "\n);"
 
-    def create_concurrent_connection(self):
-        return ConcurrentDatabase(self.db_path, self.threads, self.memory, self.connection.cursor())
+        self.connection.execute(secret)
+        self.connection.execute(f"PRAGMA activate_nvmefs('{secret_name}');")
 
-    def query(self, query: str):
-        return self.connection.query(query).fetchall()
+    def attach(self, db_name: str, mount_path: str = None) -> "Cursor":
+        if self.config and self.config.device:
+            db_path = f"nvmefs://{db_name}.db"
+        else:
+            assert mount_path, "non-nvmefs attach needs a mount_path"
+            db_path = os.path.join(mount_path, f"{db_name}.db")
 
-    def execute(self, query: str):
-        return self.connection.execute(query)
+        self.connection.execute(
+            f"ATTACH DATABASE '{db_path}' AS {db_name} (READ_WRITE);"
+        )
+        self.attached.append(db_name)
 
-    def add_extension(self, name: str):
-        self.connection.load_extension(name)
-    
-    def install_extension(self, name: str):
-        self.connection.install_extension(name)
+        if not self.config or not self.config.device:
+            self.connection.execute(
+                f"SET temp_directory = '{os.path.join(mount_path, '.tmp')}';"
+            )
 
-    def disable_object_cache(self):
-        self.execute("PRAGMA disable_object_cache;")
+        return Cursor(self.connection.cursor(), db_name, self, db_path)
 
-    def set_memory_limit(self, memory_mb: int):
-        self.execute(f"PRAGMA memory_limit='{memory_mb}MB';")
+    def execute(self, sql: str):
+        return self.connection.execute(sql)
 
-    def enable_profiling(self):
-        self.execute("PRAGMA enable_profiling='json';")
-        self.execute("PRAGMA profiling_output='profile.json';")
-        self.execute("PRAGMA profiling_mode='detailed';")
+    def query(self, sql: str):
+        return self.connection.query(sql).fetchall()
 
     def close(self):
-        self.connection.close()
-        self.connection = None
-    
-class QuackDatabase(Database):
-    """
-    QuackDatabase is just a normal Database wrapper of DuckDB
-    """
+        if self.connection:
+            self.connection.close()
+            self.connection = None
 
-    def __init__(self, db_path: str, threads: int, memory: int):
-        super().__init__(db_path, threads, memory)
-        super()._connect()
 
-        self.execute(f"ATTACH DATABASE '{self.db_path}' AS bench (READ_WRITE);")
-        self.execute("USE bench;")
-    
-    def _setup(self):
-        print("Setting up QuackDatabase")
-        return
+class Cursor:
+    def __init__(self, raw_cursor, db_name: str, parent: Database, db_path: str):
+        self._cursor = raw_cursor
+        self.db_name = db_name
+        self.parent = parent
+        self._db_path = db_path
+        self._cursor.execute(f"USE {db_name};")
 
-class ConcurrentDatabase(Database):
-    """
-    ConcurrentDatabase is a Database wrapper of DuckDB that uses the concurrent connection
-    """
+    def execute(self, sql: str):
+        return self._cursor.execute(sql)
 
-    def __init__(self, db_path: str, threads:int, memory: int, connection: duckdb.DuckDBPyConnection):
-        super().__init__(db_path, threads, memory)
-        self.connection = connection
+    def executemany(self, query: str, parameters: list):
+        return self._cursor.executemany(query, parameters)
 
-    
-    def _setup(self):
-        print("Setting up ConcurrentDatabase")
-        return
+    def query(self, sql: str):
+        return self._cursor.execute(sql).fetchall()
 
-class SPDKDatabase(Database):
-    def __init__(self, db_path: str, threads:int, memory: int, config: ConnectionConfig):
-        super().__init__(db_path, threads, memory)
-        self.config = config
-        self.device_path = config.device
-        self.use_fdp = config.use_fdp
-        self.backend = config.backend
+    def add_extension(self, name: str):
+        self._cursor.execute(f"INSTALL '{name}';")
+        self._cursor.execute(f"LOAD '{name}';")
 
-    def _setup(self):
-        print("Setting up SPDKDatabase")
-        install_extension("../../nvmefs/build/release/extension/nvmefs/nvmefs.duckdb_extension", self)
-        super()._connect()
-        self.add_extension("nvmefs")
+    @property
+    def db_path(self) -> str:
+        return self._db_path
 
-        secret = f"""CREATE OR REPLACE PERSISTENT SECRET nvmefs (
-                     TYPE NVMEFS,
-                     nvme_device_path '{self.device_path}',
-                     backend          '{self.backend}',
-                     meta             'use_default_async|no_memory_manager'"""
-        if self.use_fdp:
-            secret += f",\n fdp_mapping '{self.config.get_fdp_mapping()}'"
-        secret += "\n                    );"
+    @property
+    def memory(self) -> int:
+        return self.parent.memory
 
-        self.execute(secret)
-        self.execute(f"ATTACH DATABASE '{self.db_path}' AS bench (READ_WRITE);")
-        self.execute("USE bench;")
-        
+    @property
+    def threads(self) -> int:
+        return self.parent.threads
 
-class NvmeDatabase(Database):
-    """
-    NvmeDatabase is a Database wrapper of DuckDB that uses NVMe as the storage backend
-    """
+    @property
+    def config(self):
+        return self.parent.config
 
-    def __init__(self, db_path: str, threads: int, memory: int, config: ConnectionConfig):
-        self.config = config
-        self.device_path = config.device
-        self.backend = config.backend
-        self.use_fdp = config.use_fdp
-        self.fdp_strategy = config.fdp_strategy
+    @property
+    def device_path(self) -> str:
+        return self.parent.config.device if self.parent.config else ""
 
-        super().__init__(db_path, threads, memory)
-    
-    def _setup(self):
-        extension_path = os.path.abspath(f"/home/itu/nvmefs/build/release/extension/nvmefs/nvmefs.duckdb_extension")
-        super()._connect()
-        self.install_extension(extension_path)
-        self.add_extension(extension_path)
+    @property
+    def backend(self) -> str:
+        return self.parent.config.backend if self.parent.config else ""
 
-        secret = f"""CREATE OR REPLACE PERSISTENT SECRET nvmefs (
-                             TYPE NVMEFS,
-                             nvme_device_path '{self.device_path}',
-                             backend          '{self.backend}',
-                             meta             'use_default_async|no_memory_manager'"""
-        if self.use_fdp:
-            secret += f",\n fdp_mapping '{self.config.get_fdp_mapping()}'"
-        secret += "\n                    );"
-
-        self.execute(secret)
-        self.execute(f"ATTACH DATABASE '{self.db_path}' AS bench (READ_WRITE);")
-        self.execute("USE bench;")
-        self.disable_object_cache()
-
-def add_extension(name: str, db: Database = None):
-    if db is None or not db.get_is_connected:
-        duckdb.load_extension(name)
-    else:
-        db.add_extension(name)
-
-def install_extension(name: str, db: Database = None):
-    if db is None or not db.get_is_connected:
-        duckdb.install_extension(name)
-    else:
-        db.install_extension(name)
-
-def run_query(query: str, db: Database = None):
-    if db is None or not db.get_is_connected:
-        return duckdb.execute(query)
-    else:
-        db.query(query)
-
-def connect(db_path:str, threads: int, memory: int, config: ConnectionConfig = None) -> Database:
-    # TODO: Use parameters and insert them into the connection string
-    db: Database = None
-    print(config)
-    if db_path.startswith("nvmefs://") and config.device.startswith("/dev/"):
-        db = NvmeDatabase(db_path, threads, memory, config)
-    elif db_path.startswith("nvmefs://") and config.device.startswith("0000:"):
-        db = SPDKDatabase(db_path, threads, memory, config)
-    else:
-        db = QuackDatabase(db_path, threads, memory)
-
-    return db
+    @property
+    def use_fdp(self) -> bool:
+        return self.parent.config.use_fdp if self.parent.config else False

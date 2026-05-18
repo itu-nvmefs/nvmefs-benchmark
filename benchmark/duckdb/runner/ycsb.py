@@ -1,44 +1,85 @@
 import os
-import json
-from .ycsb_lib import ycsb_engine
-from database.database import Database
-from profiler import QueryProfiler
+from database.database import Cursor
+from .ycsb_runner import run_ycsb_loop
 
 YCSB_BENCHMARK_NAME = "ycsb"
-runner = None # YCSB Engine
+NUM_FIELDS = 10
+FIELD_LENGTH = 2000
+BATCH_SIZE = 5000
 
-def setup_ycsb_benchmark(db: Database, input_dir_path: str, scale_factor: int):
-    row_count = scale_factor * 100000
-    db.execute("CREATE TABLE IF NOT EXISTS usertable (YCSB_KEY VARCHAR PRIMARY KEY, FIELD0 VARCHAR);")
-    db.execute(f"INSERT INTO usertable SELECT 'user' || i, 'val' FROM range({row_count}) t(i);")
-    db.execute("CHECKPOINT;")
+def setup_ycsb_benchmark(cursors: list[Cursor], input_dir_path: str,
+                         scale_factor: int, checkpoint_mode: str = "auto", wal_skip_threshold_bytes: int = 100000):
+    c = cursors[0]
+    input_file_path = os.path.join(
+        input_dir_path, YCSB_BENCHMARK_NAME, f"ycsb-sf{scale_factor}.db"
+    )
+    if not os.path.exists(input_file_path):
+        raise FileNotFoundError(f"YCSB seed DB not found: {input_file_path}")
 
-def run_ycsb_epoch_benchmark(db, scale_factor: int):
-    global runner
-    iterations = 1000000
-    row_count = scale_factor * 100000
-    use_nvmefs = db.db_path.startswith("nvmefs://")
+    c.execute(f"ATTACH DATABASE '{input_file_path}' AS ycsb_src (READ_ONLY);")
+    c.execute(
+        f"CREATE TABLE {c.db_name}.usertable AS "
+        f"SELECT * FROM ycsb_src.usertable LIMIT 0;"
+    )
 
-    if runner is None:
-        use_nvmefs = db.db_path.startswith("nvmefs://") # Determine whether we are using nvmefs extension
-        dev_path = getattr(db, "device_path", "")
-        backend = getattr(db, "backend", "")
+    total_rows = scale_factor * 100_000
+    chunk_size = 1_000_000
 
-        use_fdp = getattr(db, "use_fdp", False)
-        fdp_map = db.config.get_fdp_mapping() if use_fdp else ""
+    for offset in range(0, total_rows, chunk_size):
+        c.execute(f"""
+            INSERT INTO {c.db_name}.usertable
+            SELECT * FROM ycsb_src.usertable
+            LIMIT {chunk_size} OFFSET {offset};
+        """)
+        c.execute(f"CHECKPOINT {c.db_name};")
 
-        runner = ycsb_engine.YCSBRunner(
-            db.db_path,
-            dev_path,
-            backend,
-            fdp_map,
-            use_nvmefs
+    c.execute("DETACH DATABASE ycsb_src;")
+    c.execute("PRAGMA disable_object_cache;")
+
+    if checkpoint_mode == "manual":
+        c.execute("PRAGMA wal_autocheckpoint='4GB';")
+        print("YCSB: manual checkpoint (4GB)")
+    else:
+        c.execute("PRAGMA wal_autocheckpoint='16MB';")
+        print("YCSB: auto checkpoint (16MB)")
+    
+    c.execute(f"PRAGMA auto_checkpoint_skip_wal_threshold='{wal_skip_threshold_bytes}';")
+    print(f"YCSB: auto_checkpoint_skip_wal_threshold={wal_skip_threshold_bytes}")
+
+
+def run_ycsb_epoch_benchmark(cursors: list[Cursor], scale_factor: int,
+                             duration_seconds: int = 0, reps: int = 0,
+                             checkpoint_mode: str = "auto",
+                             interval_seconds: int = 660,
+                             coordinator=None, output_handle=None,
+                             worker_handle=None):
+    c = cursors[0]
+
+    if duration_seconds <= 0 and reps <= 0:
+        raise ValueError("YCSB needs either duration_seconds or reps.")
+
+    iterations = 10_000_000_000 if duration_seconds > 0 else reps * 1_000_000
+    row_count = scale_factor * 100_000
+
+    try:
+        rows = run_ycsb_loop(
+            c,
+            num_fields=NUM_FIELDS,
+            field_length=FIELD_LENGTH,
+            batch_size=BATCH_SIZE,
+            row_count=row_count,
+            iterations=iterations,
+            duration_seconds=duration_seconds,
+            interval_seconds=interval_seconds,
+            checkpoint_mode=checkpoint_mode,
+            worker_handle=worker_handle,
+            output_handle=output_handle,
         )
+    except Exception as e:
+        print(f"YCSB failed: {e}")
+        rows = [f"ycsb_workload_a;FAIL;FAIL;FAIL;FAIL;{{}}\n"]
+        if output_handle is not None:
+            output_handle.write(rows[0])
+            output_handle.flush()
 
-    with QueryProfiler(db, "ycsb", use_nvmefs) as profiler:
-        total_time_ms = runner.run(iterations, row_count)
-
-    throughput = (iterations / total_time_ms) * 1000
-    metrics_json = json.dumps(profiler.nvmefs_metrics)
-
-    return [f"ycsb_workload_a;{total_time_ms:.2f};{throughput:.2f};{metrics_json}\n"]
+    return {"ycsb": rows}
