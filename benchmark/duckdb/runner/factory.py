@@ -94,7 +94,29 @@ def create_benchmark_runner(name, run_with_duration, checkpoint_mode="auto",
 
     if name == tpch.TPCH_BENCHMARK_NAME:
         tpch_setup = lambda cursors, input_dir: tpch.setup_tpch_benchmark(cursors, input_dir, tpch_sf)
-        return create_managed_runner(tpch.run_tpch_epoch_benchmark, tpch_sf, register_handle=True), tpch_setup
+
+        def tpch_run(cursors, duration_or_reps):
+            duration = (duration_or_reps * 60) if run_with_duration else 0
+            reps = 0 if run_with_duration else duration_or_reps
+
+            handle = None
+            clock = None
+            if coordinator is not None:
+                clock = ActiveClock()
+                handle = WorkerHandle(name=name, clock=clock)
+                coordinator.add_worker(handle)
+
+            out = output_handle.get(name) if output_handle else None
+            try:
+                return tpch.run_tpch_epoch_benchmark(
+                    cursors, tpch_sf, duration, reps,
+                    worker_handle=handle, output_handle=out,
+                )
+            finally:
+                if handle is not None and coordinator is not None:
+                    coordinator.remove_worker(handle)
+
+        return tpch_run, tpch_setup
 
     if name == ycsb.YCSB_BENCHMARK_NAME:
         ycsb_setup = lambda cursors, input_dir: ycsb.setup_ycsb_benchmark(

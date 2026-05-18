@@ -87,10 +87,7 @@ class WAFCheckpoint:
 
         # WAF deltas
         self._start_host = self._start_media = 0
-        self._start_fdp_host = self._start_fdp_media = 0
         self._prev_host = self._prev_media = 0
-        self._prev_fdp_host = self._prev_fdp_media = 0
-
     
     def add_worker(self, worker):
         with self._lock:
@@ -107,17 +104,10 @@ class WAFCheckpoint:
         self._start_host = self._prev_host = h
         self._start_media = self._prev_media = m
 
-        if self.enable_fdp:
-            fh, fm = self.device.get_written_bytes_fdp()
-            self._start_fdp_host = self._prev_fdp_host = fh
-            self._start_fdp_media = self._prev_fdp_media = fm
-
         with open(self.output_file, "w", newline="\n") as f:
             f.write("timestamp;source;phase;host_written,media_written;interval_waf;cumulative_waf\n")
             ts = datetime.now()
             f.write(f"{ts};smart-log;start;{h},{m};0.0000;0.0000\n")
-            if self.enable_fdp:
-                f.write(f"{ts};fdp-stats;start;{fh},{fm};0.0000;0.0000\n")
 
         self._thread = threading.Thread(target=self._loop, name="waf-coord", daemon=True)
         self._thread.start()
@@ -145,14 +135,30 @@ class WAFCheckpoint:
 
         if not workers:
             return
-        
-        for w in workers:
+
+        slow_workers = [w for w in workers if "tpch" in getattr(w, "name", "").lower()]
+        fast_workers = [w for w in workers if w not in slow_workers]
+
+        for w in slow_workers:
             w.request_pause()
 
         all_ok = True
-        for w in workers:
-            if not w.wait_until_paused(timeout=900):
-                print(f"[WAF coord] worker '{getattr(w, 'name', '?')}' did not pause within 900s")
+        for w in slow_workers:
+            if not w.wait_until_paused(timeout=1800):
+                print(f"[WAF coord] slow worker '{getattr(w, 'name', '?')}' did not pause within 1800s")
+                all_ok = False
+
+        if not all_ok:
+            for w in slow_workers:
+                w.release()
+            return
+
+        for w in fast_workers:
+            w.request_pause()
+
+        for w in fast_workers:
+            if not w.wait_until_paused(timeout=300):
+                print(f"[WAF coord] fast worker '{getattr(w, 'name', '?')}' did not pause within 300s")
                 all_ok = False
 
         if not all_ok:
@@ -164,9 +170,6 @@ class WAFCheckpoint:
             os.system("sync")
             ts_pre = datetime.now()
             h_pre, m_pre = self.device.get_written_bytes()
-            fh_pre = fm_pre = 0
-            if self.enable_fdp:
-                fh_pre, fm_pre = self.device.get_written_bytes_fdp()
         
             print(f"[WAF coord] draining for {self.drain_duration_s}s")
             waited, observed = self._wait_for_counter_update(self.drain_duration_s)
@@ -176,28 +179,14 @@ class WAFCheckpoint:
             os.system("sync")
             ts_post = datetime.now()
             h_post, m_post = self.device.get_written_bytes()
-            fh_post = fm_post = 0
-            if self.enable_fdp:
-                fh_post, fm_post = self.device.get_written_bytes_fdp()
-
             self._write_row(ts_pre, "smart-log", "pre-drain",
                             h_pre, m_pre, self._prev_host, self._prev_media,
                             self._start_host, self._start_media)
             self._write_row(ts_post, "smart-log", "post-drain",
                             h_post, m_post, self._prev_host, self._prev_media,
                             self._start_host, self._start_media)
-
-            if self.enable_fdp:
-                self._write_row(ts_pre, "fdp-stats", "pre-drain",
-                                fh_pre, fm_pre, self._prev_fdp_host, self._prev_fdp_media,
-                                self._start_fdp_host, self._start_fdp_media)
-                self._write_row(ts_post, "fdp-stats", "post-drain",
-                                fh_post, fm_post, self._prev_fdp_host, self._prev_fdp_media,
-                                self._start_fdp_host, self._start_fdp_media)
             
             self._prev_host, self._prev_media = h_post, m_post
-            if self.enable_fdp:
-                self._prev_fdp_host, self._prev_fdp_media = fh_post, fm_post
         finally:
             print("[WAF coord] releasing workers")
             for w in workers:
@@ -231,19 +220,11 @@ class WAFCheckpoint:
         os.system("sync")
         ts_immediate = datetime.now()
         h_imm, m_imm = self.device.get_written_bytes()
-        fh_imm = fm_imm = 0
-        if self.enable_fdp:
-            fh_imm, fm_imm = self.device.get_written_bytes_fdp()
 
         self._write_row(ts_immediate, "smart-log", "final-immediate",
                     h_imm, m_imm,
                     self._prev_host, self._prev_media,
                     self._start_host, self._start_media)
-        if self.enable_fdp:
-            self._write_row(ts_immediate, "fdp-stats", "final-immediate",
-                        fh_imm, fm_imm,
-                        self._prev_fdp_host, self._prev_fdp_media,
-                        self._start_fdp_host, self._start_fdp_media)
 
         print(f"[WAF coord] final drain for {self.drain_final_duration_s}s")
         time.sleep(self.drain_final_duration_s)
@@ -251,19 +232,13 @@ class WAFCheckpoint:
         os.system("sync")
         ts_drained = datetime.now()
         h_drn, m_drn = self.device.get_written_bytes()
-        fh_drn = fm_drn = 0
-        if self.enable_fdp:
-            fh_drn, fm_drn = self.device.get_written_bytes_fdp()
 
         self._write_row(ts_drained, "smart-log", "final-drained",
                     h_drn, m_drn,
                     self._prev_host, self._prev_media,
                     self._start_host, self._start_media)
-        if self.enable_fdp:
-            self._write_row(ts_drained, "fdp-stats", "final-drained",
-                        fh_drn, fm_drn,
-                        self._prev_fdp_host, self._prev_fdp_media,
-                        self._start_fdp_host, self._start_fdp_media)
+
+
 class ActiveClock:
     """
     Wall-clock that excludes time spent paused for drains.

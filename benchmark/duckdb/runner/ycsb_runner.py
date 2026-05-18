@@ -148,4 +148,7 @@ def run_ycsb_loop(cursor: Cursor,
             pass
         emit_interval(time.monotonic())
 
+        if worker_handle is not None and hasattr(worker_handle, "checkpoint_if_requested"):
+            worker_handle.checkpoint_if_requested("ycsb-final")
+
     return rows

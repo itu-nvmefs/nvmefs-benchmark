@@ -6,7 +6,6 @@
 DEVICE="/dev/nvme0"
 INPUT_DIR="/mnt/data/benchmark/"
 THREADS=64
-REPETITIONS=10
 
 # DuckDB / nvmefs
 DUCKDB_PATH="$HOME/nvmefs2"
@@ -25,7 +24,7 @@ fi
 
 # WAF Drain
 ENABLE_DRAIN=1
-DRAIN_INTERVAL=660
+DRAIN_INTERVAL=1800
 DRAIN_DURATION=660
 DRAIN_FINAL_DURATION=1800
 DRAIN_ARGS=()
@@ -52,7 +51,7 @@ declare -A FDP_MAPPINGS=(
 )
 
 # Which strategies to run this suite.
-FDP_STRATEGIES=("nofdp" "temp-isolated")
+FDP_STRATEGIES=("nofdp" "temp-isolated" "baseline")
 
 # ==========================================
 # Environment Setup
@@ -76,10 +75,10 @@ fi
 # Workload Configurations
 # ==========================================
 
-# TPCH Configs: SF MEM_LIMIT DB_GB TEMP_SIZE_GB
+# TPCH Configs: SF MEM_LIMIT DB_GB TEMP_SIZE_GB DURATION_MIN
 CONFIGS=(
     # "1000 12000 300 90"
-    "3000 38000 900 250"
+    "3000 38000 900 250 480"
 )
 
 PRECOND_STATES=(1)
@@ -95,7 +94,7 @@ SUITE_START_STR=$(date '+%Y-%m-%d %H:%M:%S')
 # TPC-H Suite
 # ==========================================
 for config in "${CONFIGS[@]}"; do
-    read -r TPCH_SF MEM_LIMIT DB_GB TEMP_SIZE <<< "$config"
+    read -r TPCH_SF MEM_LIMIT DB_GB TEMP_SIZE DURATION_MIN <<< "$config"
     NS_GB=$(( DB_GB + 1 + TEMP_SIZE ))
     NS_GB=$(( NS_GB + (NS_GB / 100) ))   # +1% slack
     WORKLOAD_NS_SIZE=$(( NS_GB * 1024 * 1024 * 1024 / 4096 ))
@@ -118,14 +117,14 @@ for config in "${CONFIGS[@]}"; do
                 FDP_ARGS=(--fdp --fdp_mapping "$MAPPING")
             fi
 
-            echo "Running TPC-H | SF: ${TPCH_SF} | Mem: ${MEM_LIMIT}MB | Namespace: ${WORKLOAD_GB}GB | Temp: ${TEMP_SIZE}GB | FDP: ${strategy}"
+            echo "Running TPC-H | SF: ${TPCH_SF} | Mem: ${MEM_LIMIT}MB | Namespace: ${WORKLOAD_NS_SIZE}GB | Temp: ${TEMP_SIZE}GB | FDP: ${strategy}"
             TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
-            RUN_ID="${BACKEND_LABEL}_${PRECOND_LABEL}_tpch_sf${TPCH_SF}_mem${MEM_LIMIT}_size_${WORKLOAD_NS_SIZE}_fdp-${strategy}_${TIMESTAMP}"
+            RUN_ID="run_${BACKEND_LABEL}_${PRECOND_LABEL}_tpch_sf${TPCH_SF}_mem${MEM_LIMIT}_size_${WORKLOAD_NS_SIZE}_fdp-${strategy}_${TIMESTAMP}"
 
             python3 -u benchmark.py tpch \
                 --run_id "$RUN_ID" \
                 --parallel 1 \
-                --repetitions $REPETITIONS \
+                --duration $DURATION_MIN \
                 --input_directory $INPUT_DIR \
                 --device_path $DEVICE \
                 --memory_limit "$MEM_LIMIT" \
