@@ -37,7 +37,7 @@ def derive_db_names(namespace_identities: list) -> list:
 
 def create_benchmark_runner(name, run_with_duration, checkpoint_mode="auto",
                             tpch_sf=100, ycsb_sf=100, coordinator=None,
-                            output_handle=None):
+                            output_handle=None, wal_skip_threshold_bytes=100000):
 
     def create_managed_runner(benchmark, sf, register_handle=False):
         def duration_wrapper(cursors, duration_minutes):
@@ -98,15 +98,18 @@ def create_benchmark_runner(name, run_with_duration, checkpoint_mode="auto",
 
     if name == ycsb.YCSB_BENCHMARK_NAME:
         ycsb_setup = lambda cursors, input_dir: ycsb.setup_ycsb_benchmark(
-            cursors, input_dir, ycsb_sf, checkpoint_mode)
+            cursors, input_dir, ycsb_sf, checkpoint_mode,
+            wal_skip_threshold_bytes=wal_skip_threshold_bytes)
 
         def ycsb_run(cursors, duration_or_reps):
             duration = (duration_or_reps * 60) if run_with_duration else 0
             reps = 0 if run_with_duration else duration_or_reps
 
             handle = None
+            clock = None
             if coordinator is not None:
-                handle = WorkerHandle(name=name)
+                clock = ActiveClock()  
+                handle = WorkerHandle(name=name, clock=clock)
                 coordinator.add_worker(handle)
 
             out = output_handle.get(name) if output_handle else None

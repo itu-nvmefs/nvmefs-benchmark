@@ -37,6 +37,7 @@ class Arguments:
     fdp_mapping: str = ""
     db_configs: str = ""
     temp_size: int = 200
+    wal_skip_threshold_bytes: int = 100000
 
     def get_memory_limit(self) -> int:
         """Single shared memory budget for the whole DuckDB instance, in MB."""
@@ -186,6 +187,10 @@ class Arguments:
         parser.add_argument("-f", "--fdp", action="store_true", default=False,
                             help="Enable Flexible Data Placement (FDP)")
 
+        parser.add_argument("--wal_skip_threshold_bytes", type=int,
+                    default=100000,
+                    help="auto_checkpoint_skip_wal_threshold in raw bytes ")
+
         args = parser.parse_args()
         
         arguments = Arguments(
@@ -223,6 +228,7 @@ class Arguments:
             temp_size=args.max_temp_size,
             fdp_mapping=args.fdp_mapping,
             db_configs=args.db_configs,
+            wal_skip_threshold_bytes=args.wal_skip_threshold_bytes,
         )
 
         if not arguments.valid():

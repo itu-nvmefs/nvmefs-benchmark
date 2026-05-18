@@ -24,8 +24,8 @@ else
 fi
 
 # WAF Drain
-ENABLE_DRAIN=0
-DRAIN_INTERVAL=1800
+ENABLE_DRAIN=1
+DRAIN_INTERVAL=660
 DRAIN_DURATION=660
 DRAIN_FINAL_DURATION=1800
 DRAIN_ARGS=()
@@ -34,7 +34,7 @@ if [ "$ENABLE_DRAIN" -eq 1 ]; then
 fi
 
 # Filler
-ENABLE_FILLER=0
+ENABLE_FILLER=1
 FILLER_ARGS=()
 if [ "$ENABLE_FILLER" -eq 1 ]; then
     FILLER_ARGS=(--filler)
@@ -52,7 +52,7 @@ declare -A FDP_MAPPINGS=(
 )
 
 # Which strategies to run this suite.
-FDP_STRATEGIES=("nofdp" "baseline" "temp-isolated")
+FDP_STRATEGIES=("nofdp" "temp-isolated")
 
 # ==========================================
 # Environment Setup
@@ -78,11 +78,11 @@ fi
 
 # TPCH Configs: SF MEM_LIMIT DB_GB TEMP_SIZE_GB
 CONFIGS=(
-    "1000 12000 300 90"
-    # "3000 38000 900 270"
+    # "1000 12000 300 90"
+    "3000 38000 900 250"
 )
 
-PRECOND_STATES=(0)
+PRECOND_STATES=(1)
 FIO_FILE="fio/uniform.fio"
 SETTLE_SECONDS=900
 

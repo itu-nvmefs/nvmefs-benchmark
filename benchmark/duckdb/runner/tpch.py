@@ -26,7 +26,8 @@ def run_tpch_epoch_benchmark(cursors: list[Cursor], scale_factor: int,
     c = cursors[0]
     use_nvmefs = c.db_path.startswith("nvmefs://")
 
-    for query_nr in range(1, 23):
+    SPILL_QUERIES = [18, 10, 13]
+    for query_nr in SPILL_QUERIES:  # range(1, 23):
         try:
             with QueryProfiler(c, f"tpch-{query_nr}", use_nvmefs) as profiler:
                 c.execute(f"PRAGMA tpch({query_nr});").fetchall()

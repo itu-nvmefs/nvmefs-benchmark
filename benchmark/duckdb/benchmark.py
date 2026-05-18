@@ -283,6 +283,7 @@ if __name__ == "__main__":
             b_name, run_with_duration, args.checkpoint_mode,
             tpch_sf=args.tpch_sf, ycsb_sf=args.ycsb_sf,
             coordinator=coordinator, output_handle=task_output_handle,
+            wal_skip_threshold_bytes=args.wal_skip_threshold_bytes,
         )
         print(f"Setting up {b_name} task {task_idx} on cursors {[c.db_name for c in cursor_chunk]}...")
         setup_bench(cursor_chunk, args.input_dir)

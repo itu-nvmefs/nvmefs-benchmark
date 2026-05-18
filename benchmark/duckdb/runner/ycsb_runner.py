@@ -35,7 +35,6 @@ def _sample_metrics(cursor: Cursor) -> dict:
     except Exception:
         return {}
 
-
 def run_ycsb_loop(cursor: Cursor,
                   *,
                   num_fields: int,
@@ -126,11 +125,15 @@ def run_ycsb_loop(cursor: Cursor,
                 
                 now = time.monotonic()
 
-                # Calculate interval based on chronological time
                 if interval_seconds > 0 and (now - interval_start) >= interval_seconds:
                     emit_interval(now)
 
-                if duration_seconds > 0 and (now - run_start) >= duration_seconds:
+                if worker_handle is not None and getattr(worker_handle, "clock", None) is not None:
+                    elapsed = worker_handle.clock.elapsed()
+                else:
+                    elapsed = now - run_start
+
+                if duration_seconds > 0 and elapsed >= duration_seconds:
                     break
     finally:
         if batch_params:

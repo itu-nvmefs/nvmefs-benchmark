@@ -175,9 +175,45 @@ class NvmeDevice:
         
         new_namespace = NvmeDeviceNamespace(self.device_path, namespace_id, ns_number_of_blocks, is_mounted=False)
 
-        mount_path = None
+        subprocess.run("udevadm settle", shell=True, stderr=subprocess.DEVNULL)
+        time.sleep(5)
 
-        # Mount
+        # Sequential Fill + Random Scramble/Writes
+        if precondition:
+            run_cmd("rm -f steadystate_iops.*")
+
+            precondition_path = new_namespace.get_device_path()
+            SEQ_PASSES = 2
+            RANDOM_RUNTIME_S = 1800 # 30 seconds
+            
+            print(f"Block-device preconditioning on {precondition_path}...")
+            for i in range(SEQ_PASSES):
+                print(f"  Sequential fill pass {i + 1}/{SEQ_PASSES}...")
+                run_cmd(
+                    f"fio --name=seq-fill-{i} --filename={precondition_path} "
+                    f"--rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio "
+                    f"--refill_buffers=1 --scramble_buffers=1 --size=100%"
+                )
+
+            print(f"Random-write precondition ({RANDOM_RUNTIME_S}s)...")
+            run_cmd(
+                f"fio --name=random-writes --filename={precondition_path} "
+                f"--rw=randwrite --bs=4k --iodepth=64 --direct=1 --ioengine=libaio "
+                f"--time_based --runtime={RANDOM_RUNTIME_S} --size=100% "
+                f"--refill_buffers=1 --scramble_buffers=1 "
+                f"--write_iops_log=steadystate_uniform --log_avg_msec=60000"
+            )
+
+            if settle_seconds > 0:
+                print(f"Waiting {settle_seconds}s for FTL to settle...")
+                time.sleep(settle_seconds)
+
+            if dsm_after_precondition:
+                print(f"DSM on workload namespace {new_namespace.namespace_id}...")
+                new_namespace.deallocate_blocks()
+
+                # Mount
+        mount_path = None
         if should_mount:
             time.sleep(10)
             device_path = new_namespace.get_device_path()
@@ -192,66 +228,6 @@ class NvmeDevice:
             if match is not None:
                 mount_path = match.group(1)
                 new_namespace.is_mounted = True
-
-        subprocess.run("udevadm settle", shell=True, stderr=subprocess.DEVNULL)
-        time.sleep(5)
-
-        # Sequential Fill + Random Scramble/Writes
-        if precondition:
-            run_cmd("rm -f steadystate_iops.*")
-
-            precondition_path = new_namespace.get_device_path()
-            SEQ_PASSES = 2
-            RANDOM_RUNTIME_S = 1800 # 30 seconds
-            
-            if should_mount and mount_path is not None:
-                print(f"Filesystem preconditioning on {mount_path}...")
-                for i in range(SEQ_PASSES):
-                    print(f"Sequential fill pass {i + 1}/{SEQ_PASSES}...")
-                    run_cmd(
-                        f"fio --name=seq-fill-{i} --directory={mount_path} "
-                        f"--rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio "
-                        f"--fallocate=none --fill_device=1 --size=100% "
-                        f"--refill_buffers=1 --scramble_buffers=1"
-                    )
-                    run_cmd(f"rm -f {mount_path}/seq-fill-{i}.*")
-
-                print(f"Random-write precondition ({RANDOM_RUNTIME_S}s)...")
-                run_cmd(
-                    f"fio --name=random-writes --directory={mount_path} "
-                    f"--rw=randwrite --bs=4k --iodepth=64 --direct=1 --ioengine=libaio "
-                    f"--time_based --runtime={RANDOM_RUNTIME_S} --size=100% "
-                    f"--refill_buffers=1 --scramble_buffers=1 "
-                    f"--write_iops_log=steadystate_uniform --log_avg_msec=60000"
-                )
-                run_cmd(f"rm -f {mount_path}/random-writes.*")
-
-            else:
-                print(f"Block-device preconditioning on {precondition_path}...")
-                for i in range(SEQ_PASSES):
-                    print(f"  Sequential fill pass {i + 1}/{SEQ_PASSES}...")
-                    run_cmd(
-                        f"fio --name=seq-fill-{i} --filename={precondition_path} "
-                        f"--rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio "
-                        f"--refill_buffers=1 --scramble_buffers=1 --size=100%"
-                )
-
-                print(f"Random-write precondition ({RANDOM_RUNTIME_S}s)...")
-                run_cmd(
-                    f"fio --name=random-writes --filename={precondition_path} "
-                    f"--rw=randwrite --bs=4k --iodepth=64 --direct=1 --ioengine=libaio "
-                    f"--time_based --runtime={RANDOM_RUNTIME_S} --size=100% "
-                    f"--refill_buffers=1 --scramble_buffers=1 "
-                    f"--write_iops_log=steadystate_uniform --log_avg_msec=60000"
-                )
-
-            if settle_seconds > 0:
-                print(f"Waiting {settle_seconds}s for FTL to settle...")
-                time.sleep(settle_seconds)
-
-            if dsm_after_precondition:
-                print(f"DSM on workload namespace {new_namespace.namespace_id}...")
-                new_namespace.deallocate_blocks()
 
         self.namespaces.append(new_namespace)
         return new_namespace, mount_path

@@ -23,7 +23,7 @@ else
 fi
 
 # WAF Drain
-ENABLE_DRAIN=1
+ENABLE_DRAIN=0
 DRAIN_INTERVAL=1800
 DRAIN_DURATION=660
 DRAIN_FINAL_DURATION=1800
@@ -36,6 +36,12 @@ ENABLE_FILLER=1
 FILLER_ARGS=()
 if [ "$ENABLE_FILLER" -eq 1 ]; then
     FILLER_ARGS=(--filler)
+fi
+
+ENABLE_WAL_SKIP_THRESHOLD=1
+WAL_SKIP_ARGS=()
+if [ "$ENABLE_WAL_SKIP_THRESHOLD" -eq 1 ]; then
+    WAL_SKIP_ARGS=(--wal_skip_threshold_bytes 107374182400)   # 100 GiB
 fi
 
 # ==========================================
@@ -74,12 +80,12 @@ fi
 # HTAP Configs: TPCH_SF YCSB_SF MEM_LIMIT TPCH_DB_GB YCSB_DB_GB TEMP_GB DURATION_MIN
 # Namespace size is computed as TPCH_DB + YCSB_DB + 2 * WAL(1GB) + TEMP + ~1% slack.
 CONFIGS=(
-    "3000 200 70000 900 400 250 480"
+    "3000 200 100000 880 400 220 480"
     # "3000 200 60000 900 400 400 30"
 )
 
 CHECKPOINT_MODES=("auto")
-PRECOND_STATES=(1)
+PRECOND_STATES=(0)
 SETTLE_SECONDS=900
 
 SUITE_START_TIMESTAMP=$(date +%s)
@@ -156,7 +162,8 @@ for config in "${CONFIGS[@]}"; do
                     "${FILLER_ARGS[@]}" \
                     "${PRECOND_ARGS[@]}" \
                     "${DRAIN_ARGS[@]}" \
-                    "${FDP_ARGS[@]}"
+                    "${FDP_ARGS[@]}" \
+                    "${WAL_SKIP_ARGS[@]}" \
 
                 sleep 1
             done
@@ -172,4 +179,4 @@ deactivate
 # ==========================================
 SUITE_END_TIMESTAMP=$(date +%s)
 ELAPSED=$(( SUITE_END_TIMESTAMP - SUITE_START_TIMESTAMP ))
-printf "Total Elapsed Time: %02d:%02d:%02d\n" $((ELAPSED/3600)) $(( (ELAPSED%3600)/60 )) $((ELAPSED%60))
+printf "Total Elapsed Time: %02d:%02d:%02d\n" $((ELAPSED/3600)) $(( (ELAPSED%3600)/60 )) $((ELAPSED%60))    
