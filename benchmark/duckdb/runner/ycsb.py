@@ -5,7 +5,7 @@ from .ycsb_runner import run_ycsb_loop
 YCSB_BENCHMARK_NAME = "ycsb"
 NUM_FIELDS = 10
 FIELD_LENGTH = 2000
-BATCH_SIZE = 5000
+BATCH_SIZE = 30
 
 def setup_ycsb_benchmark(cursors: list[Cursor], input_dir_path: str,
                          scale_factor: int, checkpoint_mode: str = "auto", wal_skip_threshold_bytes: int = 100000):
@@ -43,9 +43,8 @@ def setup_ycsb_benchmark(cursors: list[Cursor], input_dir_path: str,
         c.execute("PRAGMA wal_autocheckpoint='16MB';")
         print("YCSB: auto checkpoint (16MB)")
     
-    c.execute(f"PRAGMA auto_checkpoint_skip_wal_threshold='{wal_skip_threshold_bytes}';")
-    print(f"YCSB: auto_checkpoint_skip_wal_threshold={wal_skip_threshold_bytes}")
-
+    # c.execute(f"PRAGMA auto_checkpoint_skip_wal_threshold='{wal_skip_threshold_bytes}';")
+    # print(f"YCSB: auto_checkpoint_skip_wal_threshold={wal_skip_threshold_bytes}")
 
 def run_ycsb_epoch_benchmark(cursors: list[Cursor], scale_factor: int,
                              duration_seconds: int = 0, reps: int = 0,

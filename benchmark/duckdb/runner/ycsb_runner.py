@@ -117,7 +117,7 @@ def run_ycsb_loop(cursor: Cursor,
                 batch_params.clear()
                 batch_count = 0
 
-            if i > 0 and i % 500 == 0:
+            if i > 0 and i % 100 == 0:
                 if worker_handle is not None and hasattr(worker_handle, "checkpoint_if_requested"):
                     pause_start = time.monotonic()
                     worker_handle.checkpoint_if_requested(f"ycsb-op{i}")
@@ -147,5 +147,8 @@ def run_ycsb_loop(cursor: Cursor,
         except Exception:
             pass
         emit_interval(time.monotonic())
+
+        if worker_handle is not None and hasattr(worker_handle, "checkpoint_if_requested"):
+            worker_handle.checkpoint_if_requested("ycsb-final")
 
     return rows

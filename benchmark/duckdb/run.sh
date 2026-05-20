@@ -23,6 +23,9 @@ FDP_STRATEGIES=("baseline" "temp-isolated" "wal-isolated" "fully-isolated")
 SUITE_START_TIMESTAMP=$(date +%s)
 SUITE_START_STR=$(date '+%Y-%m-%d %H:%M:%S')
 
+SUITE_TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
+export SUITE_TIMESTAMP
+
 
 ###################################
 # YCSB

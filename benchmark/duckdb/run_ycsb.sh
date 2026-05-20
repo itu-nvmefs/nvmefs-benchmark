@@ -23,7 +23,7 @@
     fi
 
     # WAF Drain
-    ENABLE_DRAIN=0
+    ENABLE_DRAIN=1
     DRAIN_INTERVAL=1800
     DRAIN_DURATION=660
     DRAIN_FINAL_DURATION=1800
@@ -32,14 +32,14 @@
         DRAIN_ARGS=(--drain --drain-interval "$DRAIN_INTERVAL" --drain-duration "$DRAIN_DURATION" --drain-final-duration "$DRAIN_FINAL_DURATION")
     fi
 
-    ENABLE_FILLER=0
+    ENABLE_FILLER=1
     FILLER_ARGS=()
     if [ "$ENABLE_FILLER" -eq 1 ]; then
         FILLER_ARGS=(--filler)
     fi
 
     CHECKPOINT_MODES=("auto")
-    ENABLE_WAL_SKIP_THRESHOLD=1
+    ENABLE_WAL_SKIP_THRESHOLD=0
     WAL_SKIP_ARGS=()
     if [ "$ENABLE_WAL_SKIP_THRESHOLD" -eq 1 ]; then
         WAL_SKIP_ARGS=(--wal_skip_threshold_bytes 107374182400)   # 100 GiB
@@ -54,7 +54,7 @@
         ["fully-isolated"]=".db:1,.wal:2,.tmp:3"
     )
 
-    FDP_STRATEGIES=("nofdp")
+    FDP_STRATEGIES=("nofdp" "wal-isolated")
 
     # ==========================================
     # Environment Setup
@@ -81,8 +81,7 @@
     )
 
     # WAL 
-    PRECOND_STATES=(0)
-
+    PRECOND_STATES=(1)
     FIO_FILE="fio/uniform.fio"
     SETTLE_SECONDS=900
 
@@ -110,9 +109,22 @@
     # ==========================================
     for config in "${CONFIGS[@]}"; do
         read -r YCSB_SF MEM_LIMIT DB_GB TEMP_SIZE DURATION_MIN <<< "$config"
-        NS_GB=$(( DB_GB + 1 + TEMP_SIZE ))
-        NS_GB=$(( NS_GB + (NS_GB / 100) ))   # +1% slack
-        WORKLOAD_NS_SIZE=$(( NS_GB * 1024 * 1024 * 1024 / 4096 ))
+
+        BLOCK_SIZE=4096
+        MB_BYTES=$(( 1024 * 1024 ))
+        GB_BYTES=$(( 1024 * 1024 * 1024 ))
+
+        BLOCKS_PER_MB=$(( MB_BYTES / BLOCK_SIZE ))
+        BLOCKS_PER_GB=$(( GB_BYTES / BLOCK_SIZE ))
+
+        # Calculate exact capacity in 4096-byte blocks
+        DB_BLOCKS=$(( DB_GB * BLOCKS_PER_GB ))
+        TEMP_BLOCKS=$(( TEMP_SIZE * BLOCKS_PER_GB ))
+        WAL_BLOCKS=$(( 32 * BLOCKS_PER_MB ))
+
+        # Total capacity + 1% slack
+        TOTAL_BLOCKS=$(( DB_BLOCKS + TEMP_BLOCKS + WAL_BLOCKS ))
+        WORKLOAD_NS_SIZE=$(( TOTAL_BLOCKS + (TOTAL_BLOCKS / 100) ))
 
         DB_CONFIGS="ycsb:${DB_GB}GB"
 
@@ -133,9 +145,9 @@
                         FDP_ARGS=(--fdp --fdp_mapping "$MAPPING")
                     fi
 
-                    echo "Running YCSB | SF: ${YCSB_SF} | Mem: ${MEM_LIMIT}MB | Namespace: ${WORKLOAD_GB}GB | Duration: ${DURATION_MIN}min | Ckpt: ${ckpt} | FDP: ${strategy}"
+                    echo "Running YCSB | SF: ${YCSB_SF} | Mem: ${MEM_LIMIT}MB | Namespace: ${WORKLOAD_NS_SIZE}GB | Duration: ${DURATION_MIN}min | Ckpt: ${ckpt} | FDP: ${strategy}"
                     TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
-                    RUN_ID="${BACKEND_LABEL}_${PRECOND_LABEL}_ycsb_sf${YCSB_SF}_mem${MEM_LIMIT}_size_${WORKLOAD_NS_SIZE}_ckpt-${ckpt}_fdp-${strategy}_${TIMESTAMP}"
+                    RUN_ID="run_${BACKEND_LABEL}_${PRECOND_LABEL}_ycsb_sf${YCSB_SF}_mem${MEM_LIMIT}_size_${WORKLOAD_NS_SIZE}_ckpt-${ckpt}_fdp-${strategy}_${TIMESTAMP}"
 
                     python3 -u benchmark.py ycsb \
                         --run_id "$RUN_ID" \
@@ -155,7 +167,7 @@
                         "${PRECOND_ARGS[@]}" \
                         "${DRAIN_ARGS[@]}" \
                         "${FDP_ARGS[@]}" \
-                        "${WAL_SKIP_ARGS[@]}" \
+                        "${WAL_SKIP_ARGS[@]}" 
 
                     sleep 1
                 done
