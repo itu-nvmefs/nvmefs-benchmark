@@ -38,6 +38,7 @@ class Arguments:
     db_configs: str = ""
     temp_size: int = 200
     wal_skip_threshold_bytes: int = 100000
+    frag_script_path: str = ""
 
     def get_memory_limit(self) -> int:
         """Single shared memory budget for the whole DuckDB instance, in MB."""
@@ -190,6 +191,9 @@ class Arguments:
         parser.add_argument("--wal_skip_threshold_bytes", type=int,
                     default=100000,
                     help="auto_checkpoint_skip_wal_threshold in raw bytes ")
+        
+        parser.add_argument("--frag_script_path", type=str, default="",
+                    help="Path to the shell script that checks fragmentation")
 
         args = parser.parse_args()
         
@@ -229,6 +233,7 @@ class Arguments:
             fdp_mapping=args.fdp_mapping,
             db_configs=args.db_configs,
             wal_skip_threshold_bytes=args.wal_skip_threshold_bytes,
+            frag_script_path=args.frag_script_path,
         )
 
         if not arguments.valid():

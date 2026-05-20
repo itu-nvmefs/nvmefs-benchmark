@@ -1,11 +1,12 @@
 import os
 import time
 import multiprocessing.pool
+import subprocess
 
 from args import Arguments
 from database import database
 from datetime import datetime
-from threading import Thread
+from threading import Thread, Event
 from runner.coordinator import WAFCheckpoint
 from runner.factory import create_benchmark_runner, get_namespace_count, derive_db_names
 from device.nvme import NvmeDevice, setup_device, calculate_waf, NvmeDeviceNamespace, fill_namespace_with_data, parse_fdp_handles
@@ -73,6 +74,7 @@ def prepare_setup_func(args: Arguments, namespace_identities: list):
             dsm_after_precondition=args.dsm_after_preconditioning,
         )
         time.sleep(5)
+        args.mount_path = mount_path
 
         db = database.Database(args.threads, args.get_memory_limit(), args.temp_size)
         db_names = derive_db_names(namespace_identities)
@@ -194,6 +196,22 @@ def generate_filenames(args: Arguments):
     device_output_file = os.path.join(target_dir, f"{base_name}-device.csv")
     return target_dir, base_name, device_output_file
 
+def run_fragmentation_loop(stop_event: Event, target_dir: str, output_log: str, script: str):
+    while not stop_event.is_set():
+        try:
+            with open(output_log, "a") as f:
+                f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.flush()
+
+                subprocess.run(
+                    ["ionice", "-c", "3", "nice", "-n", "19", "/bin/bash", script, target_dir], 
+                    stdout=f, stderr=f)
+        except Exception as e:
+            print(f"Failed to run fragmentation script: {e}")
+        
+        if stop_event.wait(timeout=900):
+            break
+
 
 if __name__ == "__main__":
     args: Arguments = Arguments.parse_args()
@@ -247,6 +265,26 @@ if __name__ == "__main__":
 
     db, cursors, device = setup_device_and_db()
 
+    tasks = []
+    all_open_files = []
+    created_task_files = []
+
+    # Measure Fragmentation for mounted runs    
+    frag_stop_event = Event()
+    frag_thread = None
+
+    if args.should_mount and getattr(args, 'mount_path', None):
+        frag_dir = os.path.join(target_dir, "fragmentation")
+        os.makedirs(frag_dir, exist_ok=True)
+        frag_log_file = os.path.join(frag_dir, "fragmentation_over_time.log")
+
+        script = args.frag_script_path
+        if os.path.exists(script):
+            frag_thread = Thread(target=run_fragmentation_loop, args=(frag_stop_event, args.mount_path, frag_log_file, args.frag_script_path), daemon=True)
+            frag_thread.start()
+            created_task_files.append(frag_log_file)
+
+
     cursor_chunks = []
     current = 0
     for count in benchmark_ns_counts:
@@ -266,9 +304,6 @@ if __name__ == "__main__":
     else:
         stop_measurement = start_device_measurements(device, device_output_file, enable_fdp=args.use_fdp)
 
-    tasks = []
-    all_open_files = []
-    created_task_files = []
     for task_idx, (b_name, cursor_chunk) in enumerate(zip(benchmarks, cursor_chunks)):
         task_filename = f"{base_name}_{b_name}_task{task_idx}.csv"
         task_filepath = os.path.join(target_dir, task_filename)
@@ -301,6 +336,10 @@ if __name__ == "__main__":
                 metric_results.setdefault(key, []).extend(rows)
 
     stop_measurement()
+
+    if frag_thread and frag_thread.is_alive():
+        frag_stop_event.set()
+        frag_thread.join(timeout=5)
 
     for f in all_open_files:
         try: f.close()

@@ -58,6 +58,9 @@ declare -A FDP_MAPPINGS=(
 
 FDP_STRATEGIES=("nofdp") # "fully-isolated"
 
+# Fragmentation Script
+FRAGMENTATION_FILE="scripts/fragmentation.sh"
+
 # ==========================================
 # Environment Setup
 # ==========================================
@@ -116,10 +119,24 @@ NUM_DBS=2
 for config in "${CONFIGS[@]}"; do
     read -r TPCH_SF YCSB_SF MEM_LIMIT TPCH_DB_GB YCSB_DB_GB TEMP_SIZE DURATION_MIN <<< "$config"
 
-    # Compute total namespace size: DBs + WALs + temp, with a small slack margin.
-    NS_GB=$(( TPCH_DB_GB + YCSB_DB_GB + (NUM_DBS * WAL_GB_PER_DB) + TEMP_SIZE ))
-    NS_GB=$(( NS_GB + (NS_GB / 100) ))   # +1% slack
-    WORKLOAD_NS_SIZE=$(( NS_GB * 1024 * 1024 * 1024 / 4096 ))
+    BLOCK_SIZE=4096
+    MB_BYTES=$(( 1024 * 1024 ))
+    GB_BYTES=$(( 1024 * 1024 * 1024 ))
+
+    BLOCKS_PER_MB=$(( MB_BYTES / BLOCK_SIZE ))
+    BLOCKS_PER_GB=$(( GB_BYTES / BLOCK_SIZE ))
+
+    # Calculate exact capacity in 4096-byte blocks
+    TPCH_DB_BLOCKS=$(( TPCH_DB_GB * BLOCKS_PER_GB ))
+    YCSB_DB_BLOCKS=$(( YCSB_DB_GB * BLOCKS_PER_GB ))
+    TEMP_BLOCKS=$(( TEMP_SIZE * BLOCKS_PER_GB ))
+    
+    # 32 MB WAL per database (TPCH + YCSB = 2 WALs)
+    WAL_BLOCKS=$(( 32 * BLOCKS_PER_MB * 2 ))
+
+    # Total capacity + 1% slack
+    TOTAL_BLOCKS=$(( TPCH_DB_BLOCKS + YCSB_DB_BLOCKS + TEMP_BLOCKS + WAL_BLOCKS ))
+    WORKLOAD_NS_SIZE=$(( TOTAL_BLOCKS + (TOTAL_BLOCKS / 100) ))
 
     DB_CONFIGS="tpch:${TPCH_DB_GB}GB,ycsb:${YCSB_DB_GB}GB"
 
@@ -164,6 +181,7 @@ for config in "${CONFIGS[@]}"; do
                     "${DRAIN_ARGS[@]}" \
                     "${FDP_ARGS[@]}" \
                     "${WAL_SKIP_ARGS[@]}" \
+                    --frag_script_path $FRAGMENTATION_FILE
 
                 sleep 1
             done

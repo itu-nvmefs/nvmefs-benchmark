@@ -167,7 +167,8 @@
                         "${PRECOND_ARGS[@]}" \
                         "${DRAIN_ARGS[@]}" \
                         "${FDP_ARGS[@]}" \
-                        "${WAL_SKIP_ARGS[@]}" 
+                        "${WAL_SKIP_ARGS[@]}" \
+                        --frag_script_path $FRAGMENTATION_FILE
 
                     sleep 1
                 done
