@@ -20,8 +20,9 @@ def make_bar_plot(x_labels, y_data, y_err, ylabel, title, out_path, color, y_max
     plt.figure(figsize=(7, 5))
     plt.grid(axis="y", linestyle="--", alpha=0.7, zorder=0)
     
+    # --- NEW: Added hatch='//' to the bar function ---
     plt.bar(x_labels, y_data, yerr=y_err, capsize=4, color=color, 
-            edgecolor="black", zorder=3, width=0.6)
+            edgecolor="black", zorder=3, width=0.6, hatch='//')
             
     plt.xticks(rotation=45, ha="right")
     plt.ylabel(ylabel)

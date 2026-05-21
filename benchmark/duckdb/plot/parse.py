@@ -141,8 +141,14 @@ def parse_tpch_results(filepath: str) -> BenchmarkRun:
         reader = csv.reader(csvfile, delimiter=";")
         for row in reader:
             if not row or row[0] == "query_name": continue
+            
+            # --- NEW: Skip the query if it failed ---
+            if row[1] == "FAIL":
+                continue
+                
             query_nr = int(row[0])
             latency = safe_float(row[1])
+            
             benchmark.results[query_nr].append(latency)
             if len(row) >= 3:
                 metrics = parse_nvmefs_metrics(row[2])
