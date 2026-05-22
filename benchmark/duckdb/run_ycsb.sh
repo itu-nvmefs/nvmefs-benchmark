@@ -12,7 +12,7 @@
     EXTENSION_PATH="$DUCKDB_PATH/build/release/extension/nvmefs/nvmefs.duckdb_extension"
     VENV_DIR=".venv_v2_new"
 
-    USE_MOUNT=0
+    USE_MOUNT=1
     BACKEND_ARGS=()
     if [ "$USE_MOUNT" -eq 1 ]; then
         BACKEND_LABEL="mount"
@@ -54,7 +54,7 @@
         ["fully-isolated"]=".db:1,.wal:2,.tmp:3"
     )
 
-    FDP_STRATEGIES=("nofdp" "wal-isolated")
+    FDP_STRATEGIES=("nofdp")
 
     # ==========================================
     # Environment Setup
@@ -84,6 +84,8 @@
     PRECOND_STATES=(1)
     FIO_FILE="fio/uniform.fio"
     SETTLE_SECONDS=900
+
+    FRAGMENTATION_FILE="scripts/fragmentation.sh"
 
     SUITE_START_TIMESTAMP=$(date +%s)
     SUITE_START_STR=$(date '+%Y-%m-%d %H:%M:%S')
@@ -167,8 +169,7 @@
                         "${PRECOND_ARGS[@]}" \
                         "${DRAIN_ARGS[@]}" \
                         "${FDP_ARGS[@]}" \
-                        "${WAL_SKIP_ARGS[@]}" \
-                        --frag_script_path $FRAGMENTATION_FILE
+                        --frag_script_path "$FRAGMENTATION_FILE"
 
                     sleep 1
                 done

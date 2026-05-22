@@ -1,0 +1,9 @@
+Timestamp: 2026-05-21 23:57:20
+find: ‘/run/media/itu/29a2e912-2e15-4109-b304-4235703216d5/lost+found’: Permission denied
+File: /run/media/itu/29a2e912-2e15-4109-b304-4235703216d5/ycsb.db
+Filesystem type is: ef53
+File size of /run/media/itu/29a2e912-2e15-4109-b304-4235703216d5/ycsb.db is 12288 (3 blocks of 4096 bytes)
+ ext:     logical_offset:        physical_offset: length:   expected: flags:
+   0:        0..       2:      34304..     34306:      3:             last,eof
+/run/media/itu/29a2e912-2e15-4109-b304-4235703216d5/ycsb.db: 1 extent found
+----------------------------------------------------------------------

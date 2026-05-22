@@ -12,7 +12,7 @@ DUCKDB_PATH="$HOME/nvmefs2"
 EXTENSION_PATH="$DUCKDB_PATH/build/release/extension/nvmefs/nvmefs.duckdb_extension"
 VENV_DIR=".venv_v2_new"
 
-USE_MOUNT=0
+USE_MOUNT=1
 BACKEND_ARGS=()
 if [ "$USE_MOUNT" -eq 1 ]; then
     BACKEND_LABEL="mount"
@@ -51,7 +51,7 @@ declare -A FDP_MAPPINGS=(
 )
 
 # Which strategies to run this suite.
-FDP_STRATEGIES=("nofdp" "temp-isolated" "baseline")
+FDP_STRATEGIES=("nofdp")
 
 # Fragmentation Script
 FRAGMENTATION_FILE="scripts/fragmentation.sh"
@@ -81,7 +81,7 @@ fi
 # TPCH Configs: SF MEM_LIMIT DB_GB TEMP_SIZE_GB DURATION_MIN
 CONFIGS=(
     # "1000 12000 300 90"
-    "3000 38000 900 250 480"
+    "3000 38000 850 260 480"
 )
 
 PRECOND_STATES=(1)
@@ -154,7 +154,7 @@ for config in "${CONFIGS[@]}"; do
                 "${PRECOND_ARGS[@]}" \
                 "${DRAIN_ARGS[@]}" \
                 "${FDP_ARGS[@]}" \
-                --frag_script_path $FRAGMENTATION_FILE
+                --frag_script_path "$FRAGMENTATION_FILE"
 
             sleep 1
         done

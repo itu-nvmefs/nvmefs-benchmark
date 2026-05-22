@@ -12,7 +12,7 @@ DUCKDB_PATH="$HOME/nvmefs2"
 EXTENSION_PATH="$DUCKDB_PATH/build/release/extension/nvmefs/nvmefs.duckdb_extension"
 VENV_DIR=".venv_v2_new"
 
-USE_MOUNT=0
+USE_MOUNT=1
 BACKEND_ARGS=()
 if [ "$USE_MOUNT" -eq 1 ]; then
     BACKEND_LABEL="mount"
@@ -23,7 +23,7 @@ else
 fi
 
 # WAF Drain
-ENABLE_DRAIN=0
+ENABLE_DRAIN=1
 DRAIN_INTERVAL=1800
 DRAIN_DURATION=660
 DRAIN_FINAL_DURATION=1800

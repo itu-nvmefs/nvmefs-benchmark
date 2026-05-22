@@ -346,9 +346,12 @@ def generate_filenames(args: Arguments):
 
 
 def run_fragmentation_loop(stop_event: Event, target_dir: str, output_log: str, script: str):
+    base, ext = os.path.splitext(output_log)
     while not stop_event.is_set():
+        now = datetime.now()
+        timestamped_log = f"{base}_{now.strftime('%Y%m%d_%H%M%S')}{ext}"
         try:
-            with open(output_log, "a") as f:
+            with open(timestamped_log, "a") as f:
                 f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.flush()
 
@@ -360,7 +363,6 @@ def run_fragmentation_loop(stop_event: Event, target_dir: str, output_log: str, 
 
         if stop_event.wait(timeout=900):
             break
-
 
 def start_fragmentation_threads(args, target_dir, created_task_files):
     if not args.should_mount:
