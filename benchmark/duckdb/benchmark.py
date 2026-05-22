@@ -18,7 +18,6 @@ def prepare_setup_func(args: Arguments, namespace_identities: list):
 
     def setup_nvme():
         fdp_handles = parse_fdp_handles(args.fdp_mapping) if args.use_fdp else []
-        
 
         if not args.skip_reset:
             workload_ns, _ = setup_device(
@@ -82,6 +81,150 @@ def prepare_setup_func(args: Arguments, namespace_identities: list):
         return db, cursors, device
 
     return setup_nvme if not args.should_mount else setup_normal
+
+
+def prepare_setup_func_multi_namespace(args: Arguments, benchmarks: list,
+                                       unallocated_blocks: int = 0):
+    device = NvmeDevice(args.device) if args.device else None
+
+    def setup():
+        db_configs_dict = args.parse_db_configs()
+        ns_sizes_dict = args.parse_ns_sizes()
+        workload_blocks_dict = args.parse_workload_blocks()
+        temp_sizes_dict = args.parse_temp_sizes()
+
+        # Auto-derive at most one missing ns size from device free capacity.
+        # ENABLE_FILLER=1 in htap.sh omits ns2 so Python fills it in here.
+        missing = [b for b in benchmarks if b not in ns_sizes_dict]
+        if missing:
+            if len(missing) > 1:
+                raise ValueError(
+                    f"--ns_sizes missing entries for {missing}; can auto-derive "
+                    f"at most one namespace from device free capacity."
+                )
+            specified_total = sum(ns_sizes_dict.values())
+            remainder = unallocated_blocks - specified_total
+            needed = workload_blocks_dict.get(missing[0], 0)
+            if remainder <= needed:
+                raise ValueError(
+                    f"Cannot auto-size '{missing[0]}': device has "
+                    f"{unallocated_blocks} unallocated blocks, "
+                    f"{specified_total} already specified, leaving "
+                    f"{remainder} blocks -- not enough for "
+                    f"'{missing[0]}'s workload ({needed} blocks). "
+                    f"Reduce TPCH/YCSB sizing or grow the device budget."
+                )
+            ns_sizes_dict[missing[0]] = remainder
+            print(f"[setup] Auto-sized '{missing[0]}' ns to {remainder} blocks "
+                  f"(unallocated {unallocated_blocks} - specified {specified_total})")
+
+        workload_blocks_per_bench = workload_blocks_dict
+        fdp_handles = parse_fdp_handles(args.fdp_mapping) if args.use_fdp else []
+
+        namespaces: list[NvmeDeviceNamespace] = []
+        if not args.skip_reset:
+            # Create namespaces
+            for i, b in enumerate(benchmarks):
+                ns_id = i + 1
+                ns_blocks = ns_sizes_dict[b]
+                wb = workload_blocks_per_bench[b]
+                ns = device.create_workload_namespace(
+                    namespace_id=ns_id,
+                    ns_size_blocks=ns_blocks,
+                    workload_blocks=wb,
+                    enable_fdp=args.use_fdp,
+                    fdp_handles=fdp_handles,
+                )
+                namespaces.append(ns)
+
+            # Fill the filler region (no-op when workload covers entire ns)
+            for ns, b in zip(namespaces, benchmarks):
+                device.fill_filler_region(
+                    ns,
+                    workload_blocks=workload_blocks_per_bench[b],
+                    ns_size_blocks=ns_sizes_dict[b],
+                    passes=2,
+                )
+
+            # Precondition workload region
+            if args.precondition:
+                for ns, b in zip(namespaces, benchmarks):
+                    device.precondition_workload_region(
+                        ns,
+                        workload_blocks=workload_blocks_per_bench[b],
+                        sequential_passes=2,
+                        random_write_seconds=args.random_write_seconds,
+                    )
+            # Settle window
+            if args.settle_seconds > 0:
+                time.sleep(args.settle_seconds)
+
+            # DSM workload region
+            if args.precondition or args.dsm_after_preconditioning:
+                for ns, b in zip(namespaces, benchmarks):
+                    device.dsm_workload_region(ns, workload_blocks_per_bench[b])
+            time.sleep(5)
+        else:
+            for i, b in enumerate(benchmarks):
+                ns_id = i + 1
+                namespaces.append(
+                    NvmeDeviceNamespace(device.device_path, ns_id, ns_sizes_dict[b])
+                )
+
+        dbs: list[database.Database] = []
+        cursors = []
+
+        if args.should_mount:
+            mount_paths = []
+            for ns, b in zip(namespaces, benchmarks):
+                mp = device.format_and_mount_workload_region(
+                    ns, workload_blocks_per_bench[b]
+                )
+                mount_paths.append(mp)
+
+            args.mount_paths = mount_paths
+            for i, (b, ns, mp) in enumerate(zip(benchmarks, namespaces, mount_paths)):
+                temp_gb = temp_sizes_dict[b]
+                mem_mb = args.get_memory_limit_for(b)
+                print(f"[setup] DuckDB instance for '{b}' on mount {mp} "
+                      f"(ns_id={i + 1}, mem={mem_mb}MB, temp={temp_gb}GB)")
+                db = database.Database(args.threads, mem_mb, temp_gb)
+                cursor = db.attach(b, mount_path=mp)
+                dbs.append(db)
+                cursors.append(cursor)
+            return dbs, cursors, device
+
+        for i, (b, ns) in enumerate(zip(benchmarks, namespaces)):
+            ns_id = i + 1
+            device_path = (ns.get_generic_device_path()
+                           if args.use_generic_device
+                           else ns.get_device_path())
+            temp_gb = temp_sizes_dict[b]
+            mem_mb = args.get_memory_limit_for(b)
+
+            config = database.ConnectionConfig(
+                device=device_path,
+                backend=args.io_backend,
+                use_fdp=args.use_fdp,
+                fdp_mapping=args.fdp_mapping,
+                memory=mem_mb,
+                threads=args.threads,
+                ns_id=ns_id,
+                extension_path=args.extension_path,
+                # Only this workload's main file is hosted on this namespace.
+                db_configs={b: db_configs_dict[b]},
+            )
+
+            print(f"[setup] DuckDB instance for '{b}' on {device_path} "
+                  f"(ns_id={ns_id}, mem={mem_mb}MB, temp={temp_gb}GB)")
+            db = database.Database(args.threads, mem_mb, temp_gb, config)
+            cursor = db.attach(b)
+            dbs.append(db)
+            cursors.append(cursor)
+
+        return dbs, cursors, device
+
+    return setup
 
 
 def run_concurrent_benchmark(tasks: list, span: int):
@@ -163,9 +306,14 @@ def start_device_measurements(device: NvmeDevice, file_name: str, enable_fdp: bo
 
 
 def _scale_factor_name(args):
-    if args.benchmark == "tpch": return f"sf{args.tpch_sf}"
-    if args.benchmark == "ycsb": return f"sf{args.ycsb_sf}"
-    if args.benchmark == "htap": return f"tsf{args.tpch_sf}-ysf{args.ycsb_sf}"
+    if args.benchmark == "tpch":
+        return f"sf{args.tpch_sf}"
+    if args.benchmark == "ycsb":
+        return f"sf{args.ycsb_sf}"
+    if "tpch" in args.benchmark and "ycsb" in args.benchmark:
+        return f"tsf{args.tpch_sf}-ysf{args.ycsb_sf}"
+    if args.benchmark == "htap":
+        return f"tsf{args.tpch_sf}-ysf{args.ycsb_sf}"
     return f"sf{args.tpch_sf}"
 
 
@@ -196,6 +344,7 @@ def generate_filenames(args: Arguments):
     device_output_file = os.path.join(target_dir, f"{base_name}-device.csv")
     return target_dir, base_name, device_output_file
 
+
 def run_fragmentation_loop(stop_event: Event, target_dir: str, output_log: str, script: str):
     while not stop_event.is_set():
         try:
@@ -204,13 +353,50 @@ def run_fragmentation_loop(stop_event: Event, target_dir: str, output_log: str, 
                 f.flush()
 
                 subprocess.run(
-                    ["ionice", "-c", "3", "nice", "-n", "19", "/bin/bash", script, target_dir], 
+                    ["ionice", "-c", "3", "nice", "-n", "19", "/bin/bash", script, target_dir],
                     stdout=f, stderr=f)
         except Exception as e:
             print(f"Failed to run fragmentation script: {e}")
-        
+
         if stop_event.wait(timeout=900):
             break
+
+
+def start_fragmentation_threads(args, target_dir, created_task_files):
+    if not args.should_mount:
+        return None, []
+
+    mount_paths = []
+    if getattr(args, "mount_paths", None):
+        mount_paths = list(args.mount_paths)
+    elif getattr(args, "mount_path", None):
+        mount_paths = [args.mount_path]
+
+    if not mount_paths:
+        return None, []
+
+    script = getattr(args, "frag_script_path", None)
+    if not script or not os.path.exists(script):
+        return None, []
+
+    frag_dir = os.path.join(target_dir, "fragmentation")
+    os.makedirs(frag_dir, exist_ok=True)
+
+    stop_event = Event()
+    threads = []
+    for mp in mount_paths:
+        tag = mp.rstrip("/").split("/")[-1] if len(mount_paths) > 1 else "fragmentation"
+        frag_log_file = os.path.join(frag_dir, f"{tag}_over_time.log")
+        t = Thread(
+            target=run_fragmentation_loop,
+            args=(stop_event, mp, frag_log_file, script),
+            daemon=True,
+        )
+        t.start()
+        threads.append(t)
+        created_task_files.append(frag_log_file)
+        print(f"[fragmentation] watching mount {mp} -> {frag_log_file}")
+    return stop_event, threads
 
 
 if __name__ == "__main__":
@@ -227,15 +413,18 @@ if __name__ == "__main__":
         args.threads = max(1, args.threads // num_parallel)
         print(f"Partitioning CPU: {args.threads} threads per instance.")
 
+    multi_workload = args.is_multi_workload()
+
     benchmark_ns_counts = []
     namespace_identities = []
-    total_workload_namespaces = 0
     for b in benchmarks:
-        ns_count = get_namespace_count(b)
+        if multi_workload:
+            ns_count = 1
+        else:
+            ns_count = get_namespace_count(b)
         benchmark_ns_counts.append(ns_count)
         for local_idx in range(ns_count):
             namespace_identities.append((b, local_idx))
-        total_workload_namespaces += ns_count
 
     initial_device = NvmeDevice(args.device) if args.device else None
     if not args.skip_reset and initial_device:
@@ -247,7 +436,7 @@ if __name__ == "__main__":
     if args.use_fdp:
         initial_device.enable_fdp()
 
-    if args.filler and not args.skip_reset and initial_device is not None:
+    if (not multi_workload) and args.filler and not args.skip_reset and initial_device is not None:
         filler_size = initial_device.unallocated_number_of_blocks - args.namespace_size
         if filler_size <= 0:
             raise ValueError(
@@ -258,32 +447,25 @@ if __name__ == "__main__":
                                         enable_fdp=args.use_fdp, phndls="0",)
         fill_namespace_with_data(filler_ns, passes=2)
 
+    if multi_workload:
+        unallocated = (initial_device.unallocated_number_of_blocks
+                       if initial_device is not None else 0)
+        setup_device_and_db = prepare_setup_func_multi_namespace(
+            args, benchmarks, unallocated_blocks=unallocated
+        )
+    else:
+        setup_device_and_db = prepare_setup_func(args, namespace_identities)
 
-    setup_device_and_db = prepare_setup_func(args, namespace_identities)
     target_dir, base_name, device_output_file = generate_filenames(args)
     run_with_duration = args.duration > 0
-
     db, cursors, device = setup_device_and_db()
 
     tasks = []
     all_open_files = []
     created_task_files = []
 
-    # Measure Fragmentation for mounted runs    
-    frag_stop_event = Event()
-    frag_thread = None
-
-    if args.should_mount and getattr(args, 'mount_path', None):
-        frag_dir = os.path.join(target_dir, "fragmentation")
-        os.makedirs(frag_dir, exist_ok=True)
-        frag_log_file = os.path.join(frag_dir, "fragmentation_over_time.log")
-
-        script = args.frag_script_path
-        if os.path.exists(script):
-            frag_thread = Thread(target=run_fragmentation_loop, args=(frag_stop_event, args.mount_path, frag_log_file, args.frag_script_path), daemon=True)
-            frag_thread.start()
-            created_task_files.append(frag_log_file)
-
+    # Measure Fragmentation for mounted runs
+    frag_stop_event, frag_threads = start_fragmentation_threads(args, target_dir, created_task_files)
 
     cursor_chunks = []
     current = 0
@@ -337,14 +519,23 @@ if __name__ == "__main__":
 
     stop_measurement()
 
-    if frag_thread and frag_thread.is_alive():
+    if frag_stop_event is not None:
         frag_stop_event.set()
-        frag_thread.join(timeout=5)
+        for t in frag_threads:
+            if t.is_alive():
+                t.join(timeout=5)
 
     for f in all_open_files:
         try: f.close()
         except: pass
-    try: db.close()
+
+    try:
+        if isinstance(db, list):
+            for d in db:
+                try: d.close()
+                except: pass
+        else:
+            db.close()
     except: pass
 
     print(f"\n--- Run Complete: {target_dir} ---")

@@ -232,6 +232,125 @@ class NvmeDevice:
         self.namespaces.append(new_namespace)
         return new_namespace, mount_path
 
+    def create_workload_namespace(self, namespace_id: int, ns_size_blocks: int, workload_blocks: int = 0,
+        enable_fdp: bool = False, endgrp_id: int = 1, fdp_handles: list = None) -> NvmeDeviceNamespace:
+
+        if workload_blocks == 0:
+            workload_blocks = ns_size_blocks
+        if workload_blocks > ns_size_blocks:
+            raise ValueError(f"workload_blocks ({workload_blocks}) > ns_size_blocks ({ns_size_blocks})")
+
+        if enable_fdp:
+            handles = fdp_handles if fdp_handles else [1, 2, 3, 4]
+            nphndls = len(handles)
+            phndls = ",".join(str(h) for h in handles)
+            print(f"  Attaching {nphndls} placement handle(s): {phndls}")
+            run_cmd(
+                f"nvme create-ns {self.device_path} --nsze={ns_size_blocks} "
+                f"--ncap={ns_size_blocks} --flbas=0 --endg-id={endgrp_id} "
+                f"--nphndls={nphndls} --phndls={phndls}"
+            )
+        else:
+            run_cmd(
+                f"nvme create-ns {self.device_path} --nsze={ns_size_blocks} "
+                f"--ncap={ns_size_blocks} --flbas=0"
+            )
+
+        run_cmd(f"nvme attach-ns {self.device_path} --namespace-id={namespace_id} --controllers=0x7")
+        run_cmd(f"nvme ns-rescan {self.device_path}")
+
+        ns = NvmeDeviceNamespace(self.device_path, namespace_id, ns_size_blocks, is_mounted=False)
+        subprocess.run("udevadm settle", shell=True, stderr=subprocess.DEVNULL)
+        time.sleep(5)
+
+        self.namespaces.append(ns)
+        return ns
+    
+    def fill_filler_region(self, namespace: NvmeDeviceNamespace, workload_blocks: int,
+        ns_size_blocks: int, passes: int = 2):
+        filler_blocks = ns_size_blocks - workload_blocks
+        # Populate filler region with valid sequential data
+        if filler_blocks > 0:
+            filler_offset = workload_blocks * self.block_size
+            filler_size = filler_blocks * self.block_size
+            print(
+                f"  Populating filler region NS {namespace.namespace_id}: "
+                f"offset={filler_offset:,}B size={filler_size:,}B"
+            )
+
+            for i in range(passes):
+                print(f"    Filler pass {i + 1}/{passes}...")
+                run_cmd(
+                    f"fio --name=ns{namespace.namespace_id}-filler-{i} "
+                    f"--filename={namespace.get_device_path()} "
+                    f"--rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio "
+                    f"--refill_buffers=1 --scramble_buffers=1 "
+                    f"--offset={filler_offset} --size={filler_size}"
+                )
+
+    def precondition_workload_region(self, namespace: NvmeDeviceNamespace, workload_blocks: int,
+        sequential_passes: int = 2, random_write_seconds: int = 1800):
+        
+        workload_bytes = workload_blocks * self.block_size
+        device_ns_path = namespace.get_device_path()
+
+        for i in range(sequential_passes):
+            print(f"  Sequential pass {i + 1}/{sequential_passes}...")
+            run_cmd(
+                f"fio --name=ns{namespace.namespace_id}-precond-seq-{i} "
+                f"--filename={device_ns_path} "
+                f"--rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio "
+                f"--refill_buffers=1 --scramble_buffers=1 "
+                f"--offset=0 --size={workload_bytes}"
+            )
+        if random_write_seconds > 0:
+            print(f"  Random writes for {random_write_seconds}s...")
+            run_cmd(
+                f"fio --name=ns{namespace.namespace_id}-precond-rand "
+                f"--filename={device_ns_path} "
+                f"--rw=randwrite --bs=4k --iodepth=64 --direct=1 --ioengine=libaio "
+                f"--time_based --runtime={random_write_seconds} "
+                f"--offset=0 --size={workload_bytes} "
+                f"--refill_buffers=1 --scramble_buffers=1"
+            )
+    
+    def dsm_workload_region(self, namespace: NvmeDeviceNamespace, workload_blocks: int):
+        run_cmd(
+            f"nvme dsm {namespace.get_device_path()} --ad "
+            f"--slbs=0 --blocks={workload_blocks}"
+        )
+    
+    def format_and_mount_workload_region(self, namespace: NvmeDeviceNamespace, workload_blocks: int) -> str:
+        device_path = namespace.get_device_path()
+        uid = os.getuid()
+        gid = os.getgid()
+
+        run_cmd(
+            f"mkfs.ext4 -F -b 4096 -E root_owner={uid}:{gid} "
+            f"{device_path} {workload_blocks}"
+        )
+
+        run_cmd("udevadm settle")
+        time.sleep(2)
+ 
+        mount_output = run_cmd(
+            f"udisksctl mount -b {device_path} --no-user-interaction"
+        )
+        match = re.search(
+            r"^Mounted \/dev\/nvme\dn\d+ at (\/run\/media\/itu\/[a-f\d-]+)",
+            mount_output, re.MULTILINE,
+        )
+        if match is None:
+            raise RuntimeError(
+                f"Failed to parse udisksctl mount output for {device_path}: "
+                f"{mount_output!r}"
+            )
+        mount_path = match.group(1)
+        namespace.is_mounted = True
+        print(f"  Mounted at {mount_path}")
+        return mount_path
+
+
     def get_written_bytes_nsid(self, namespace_id: int):
         for namespace in self.namespaces:
             if namespace.namespace_id == namespace_id:
