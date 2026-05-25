@@ -4,6 +4,31 @@ import threading
 from datetime import datetime
 from typing import List, Optional
 
+class IPCWorkerHandleParent:
+    """Parent-side handle that looks exactly like a local WorkerHandle to WAFCheckpoint."""
+    def __init__(self, name: str, pause_req, paused_ack, release_ev):
+        self.name = name
+        self._pause_requested = pause_req
+        self._paused = paused_ack
+        self._release = release_ev
+
+    def request_pause(self):
+        self._release.clear()
+        self._paused.clear()
+        self._pause_requested.set()
+
+    def wait_until_paused(self, timeout: float = None) -> bool:
+        return self._paused.wait(timeout)
+
+    def release(self):
+        self._pause_requested.clear()
+        self._release.set()
+
+class _PassthroughCoordinator:
+    """Dummy coordinator for the child process to satisfy factory.py checks."""
+    def add_worker(self, worker): pass
+    def remove_worker(self, worker): pass
+
 class WorkerHandle:
     """
     Pause/resume handle for a Python-side worker 

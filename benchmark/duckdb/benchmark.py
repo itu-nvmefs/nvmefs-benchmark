@@ -1,16 +1,18 @@
 import os
 import time
+import multiprocessing
 import multiprocessing.pool
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import Barrier
 
 from args import Arguments
 from database import database
 from datetime import datetime
 from threading import Thread, Event
-from runner.coordinator import WAFCheckpoint
+from runner.coordinator import _PassthroughCoordinator, IPCWorkerHandleParent, WAFCheckpoint
 from runner.factory import create_benchmark_runner, get_namespace_count, derive_db_names
 from device.nvme import NvmeDevice, setup_device, calculate_waf, NvmeDeviceNamespace, fill_namespace_with_data, parse_fdp_handles
-
 
 def prepare_setup_func(args: Arguments, namespace_identities: list):
     device = NvmeDevice(args.device) if args.device else None
@@ -82,150 +84,218 @@ def prepare_setup_func(args: Arguments, namespace_identities: list):
 
     return setup_nvme if not args.should_mount else setup_normal
 
-
-def prepare_setup_func_multi_namespace(args: Arguments, benchmarks: list,
-                                       unallocated_blocks: int = 0):
+def setup_namespaces_for_multi(args: Arguments, benchmarks: list,
+                               unallocated_blocks: int = 0):
     device = NvmeDevice(args.device) if args.device else None
 
-    def setup():
-        db_configs_dict = args.parse_db_configs()
-        ns_sizes_dict = args.parse_ns_sizes()
-        workload_blocks_dict = args.parse_workload_blocks()
-        temp_sizes_dict = args.parse_temp_sizes()
+    db_configs_dict = args.parse_db_configs()
+    ns_sizes_dict = args.parse_ns_sizes()
+    workload_blocks_dict = args.parse_workload_blocks()
+    temp_sizes_dict = args.parse_temp_sizes()
 
-        # Auto-derive at most one missing ns size from device free capacity.
-        # ENABLE_FILLER=1 in htap.sh omits ns2 so Python fills it in here.
-        missing = [b for b in benchmarks if b not in ns_sizes_dict]
-        if missing:
-            if len(missing) > 1:
-                raise ValueError(
-                    f"--ns_sizes missing entries for {missing}; can auto-derive "
-                    f"at most one namespace from device free capacity."
-                )
-            specified_total = sum(ns_sizes_dict.values())
-            remainder = unallocated_blocks - specified_total
-            needed = workload_blocks_dict.get(missing[0], 0)
-            if remainder <= needed:
-                raise ValueError(
-                    f"Cannot auto-size '{missing[0]}': device has "
-                    f"{unallocated_blocks} unallocated blocks, "
-                    f"{specified_total} already specified, leaving "
-                    f"{remainder} blocks -- not enough for "
-                    f"'{missing[0]}'s workload ({needed} blocks). "
-                    f"Reduce TPCH/YCSB sizing or grow the device budget."
-                )
-            ns_sizes_dict[missing[0]] = remainder
-            print(f"[setup] Auto-sized '{missing[0]}' ns to {remainder} blocks "
-                  f"(unallocated {unallocated_blocks} - specified {specified_total})")
+    # Auto-derive at most one missing ns size from device free capacity.
+    missing = [b for b in benchmarks if b not in ns_sizes_dict]
+    if missing:
+        if len(missing) > 1:
+            raise ValueError(
+                f"--ns_sizes missing entries for {missing}; can auto-derive "
+                f"at most one namespace from device free capacity."
+            )
+        specified_total = sum(ns_sizes_dict.values())
+        remainder = unallocated_blocks - specified_total
+        needed = workload_blocks_dict.get(missing[0], 0)
+        if remainder <= needed:
+            raise ValueError(
+                f"Cannot auto-size '{missing[0]}': device has "
+                f"{unallocated_blocks} unallocated blocks, "
+                f"{specified_total} already specified, leaving "
+                f"{remainder} blocks -- not enough for "
+                f"'{missing[0]}'s workload ({needed} blocks)."
+            )
+        ns_sizes_dict[missing[0]] = remainder
+        print(f"[setup] Auto-sized '{missing[0]}' ns to {remainder} blocks "
+              f"(unallocated {unallocated_blocks} - specified {specified_total})")
 
-        workload_blocks_per_bench = workload_blocks_dict
-        fdp_handles = parse_fdp_handles(args.fdp_mapping) if args.use_fdp else []
+    fdp_handles = parse_fdp_handles(args.fdp_mapping) if args.use_fdp else []
 
-        namespaces: list[NvmeDeviceNamespace] = []
-        if not args.skip_reset:
-            # Create namespaces
-            for i, b in enumerate(benchmarks):
-                ns_id = i + 1
-                ns_blocks = ns_sizes_dict[b]
-                wb = workload_blocks_per_bench[b]
-                ns = device.create_workload_namespace(
-                    namespace_id=ns_id,
-                    ns_size_blocks=ns_blocks,
-                    workload_blocks=wb,
-                    enable_fdp=args.use_fdp,
-                    fdp_handles=fdp_handles,
-                )
-                namespaces.append(ns)
-
-            # Fill the filler region (no-op when workload covers entire ns)
-            for ns, b in zip(namespaces, benchmarks):
-                device.fill_filler_region(
-                    ns,
-                    workload_blocks=workload_blocks_per_bench[b],
-                    ns_size_blocks=ns_sizes_dict[b],
-                    passes=2,
-                )
-
-            # Precondition workload region
-            if args.precondition:
-                for ns, b in zip(namespaces, benchmarks):
-                    device.precondition_workload_region(
-                        ns,
-                        workload_blocks=workload_blocks_per_bench[b],
-                        sequential_passes=2,
-                        random_write_seconds=args.random_write_seconds,
-                    )
-            # Settle window
-            if args.settle_seconds > 0:
-                time.sleep(args.settle_seconds)
-
-            # DSM workload region
-            if args.precondition or args.dsm_after_preconditioning:
-                for ns, b in zip(namespaces, benchmarks):
-                    device.dsm_workload_region(ns, workload_blocks_per_bench[b])
-            time.sleep(5)
-        else:
-            for i, b in enumerate(benchmarks):
-                ns_id = i + 1
-                namespaces.append(
-                    NvmeDeviceNamespace(device.device_path, ns_id, ns_sizes_dict[b])
-                )
-
-        dbs: list[database.Database] = []
-        cursors = []
-
-        if args.should_mount:
-            mount_paths = []
-            for ns, b in zip(namespaces, benchmarks):
-                mp = device.format_and_mount_workload_region(
-                    ns, workload_blocks_per_bench[b]
-                )
-                mount_paths.append(mp)
-
-            args.mount_paths = mount_paths
-            for i, (b, ns, mp) in enumerate(zip(benchmarks, namespaces, mount_paths)):
-                temp_gb = temp_sizes_dict[b]
-                mem_mb = args.get_memory_limit_for(b)
-                print(f"[setup] DuckDB instance for '{b}' on mount {mp} "
-                      f"(ns_id={i + 1}, mem={mem_mb}MB, temp={temp_gb}GB)")
-                db = database.Database(args.threads, mem_mb, temp_gb)
-                cursor = db.attach(b, mount_path=mp)
-                dbs.append(db)
-                cursors.append(cursor)
-            return dbs, cursors, device
-
-        for i, (b, ns) in enumerate(zip(benchmarks, namespaces)):
+    namespaces: list[NvmeDeviceNamespace] = []
+    if not args.skip_reset:
+        # Create namespaces
+        for i, b in enumerate(benchmarks):
             ns_id = i + 1
-            device_path = (ns.get_generic_device_path()
-                           if args.use_generic_device
-                           else ns.get_device_path())
-            temp_gb = temp_sizes_dict[b]
-            mem_mb = args.get_memory_limit_for(b)
+            ns_blocks = ns_sizes_dict[b]
+            wb = workload_blocks_dict[b]
+            print(f"[parent]   -> Creating NS {ns_id} for '{b}': "
+                  f"ns_blocks={ns_blocks}, workload_blocks={wb}")
+            ns = device.create_workload_namespace(
+                namespace_id=ns_id,
+                ns_size_blocks=ns_blocks,
+                workload_blocks=wb,
+                enable_fdp=args.use_fdp,
+                fdp_handles=fdp_handles,
+            )
+            namespaces.append(ns)
 
-            config = database.ConnectionConfig(
-                device=device_path,
-                backend=args.io_backend,
-                use_fdp=args.use_fdp,
-                fdp_mapping=args.fdp_mapping,
-                memory=mem_mb,
-                threads=args.threads,
-                ns_id=ns_id,
-                extension_path=args.extension_path,
-                # Only this workload's main file is hosted on this namespace.
-                db_configs={b: db_configs_dict[b]},
+        # Fill filler region (no-op when workload covers entire ns)
+        for ns, b in zip(namespaces, benchmarks):
+            device.fill_filler_region(
+                ns,
+                workload_blocks=workload_blocks_dict[b],
+                ns_size_blocks=ns_sizes_dict[b],
+                passes=2,
             )
 
-            print(f"[setup] DuckDB instance for '{b}' on {device_path} "
-                  f"(ns_id={ns_id}, mem={mem_mb}MB, temp={temp_gb}GB)")
-            db = database.Database(args.threads, mem_mb, temp_gb, config)
-            cursor = db.attach(b)
-            dbs.append(db)
-            cursors.append(cursor)
+        # Precondition workload region
+        if args.precondition:
+            print(f"[parent] Preconditioning {len(namespaces)} workload "
+                  f"regions concurrently...")
+            with ThreadPoolExecutor(max_workers=len(namespaces)) as ex:
+                futures = {
+                    ex.submit(
+                        device.precondition_workload_region,
+                        ns,
+                        workload_blocks=workload_blocks_dict[b],
+                        sequential_passes=2,
+                        random_write_seconds=args.random_write_seconds,
+                    ): b
+                    for ns, b in zip(namespaces, benchmarks)
+                }
+                for f in futures:
+                    b = futures[f]
+                    f.result()
+                    print(f"[parent]   -> Preconditioning '{b}' finished")
+            if args.settle_seconds > 0:
+                print(f"[parent] Settling for {args.settle_seconds}s ...")
+                time.sleep(args.settle_seconds)
 
-        return dbs, cursors, device
+        if args.precondition or args.dsm_after_preconditioning:
+            for ns, b in zip(namespaces, benchmarks):
+                device.dsm_workload_region(ns, workload_blocks_dict[b])
+        time.sleep(5)
+    else:
+        for i, b in enumerate(benchmarks):
+            ns_id = i + 1
+            namespaces.append(
+                NvmeDeviceNamespace(device.device_path, ns_id, ns_sizes_dict[b])
+            )
 
-    return setup
+    namespace_infos = []
+    if args.should_mount:
+        print("[parent] Formatting and mounting workload regions...")
+        mount_paths = []
+        for ns, b in zip(namespaces, benchmarks):
+            mp = device.format_and_mount_workload_region(
+                ns, workload_blocks_dict[b]
+            )
+            mount_paths.append(mp)
+        args.mount_paths = mount_paths
+        for i, (b, mp) in enumerate(zip(benchmarks, mount_paths)):
+            namespace_infos.append({"benchmark": b, "ns_id": i + 1, "mount_path": mp})
+    else:
+        for i, b in enumerate(benchmarks):
+            namespace_infos.append({"benchmark": b, "ns_id": i + 1, "mount_path": None})
 
+    return device, namespace_infos
+
+def _run_workload_in_subprocess(benchmark_name: str, ns_id: int,
+                                args: Arguments, duration_or_reps: int,
+                                target_dir: str, base_name: str, task_idx: int,
+                                mount_path: str = None,
+                                start_barrier = None,
+                                pause_req=None, paused_ack=None, release_ev=None
+                                
+                                ):
+    db_configs_dict = args.parse_db_configs()
+    temp_sizes_dict = args.parse_temp_sizes()
+    temp_gb = temp_sizes_dict[benchmark_name]
+    mem_mb = args.get_memory_limit_for(benchmark_name)
+
+    if args.should_mount and mount_path:
+        print(f"[child:{benchmark_name}] DB on mount {mount_path} "
+              f"(ns_id={ns_id}, mem={mem_mb}MB, temp={temp_gb}GB)", flush=True)
+        db = database.Database(args.threads, mem_mb, temp_gb)
+        cursor = db.attach(benchmark_name, mount_path=mount_path)
+    else:
+        # Namespace already exists; size doesn't matter for the connection.
+        ns = NvmeDeviceNamespace(args.device, ns_id, 0)
+        device_path = (ns.get_generic_device_path()
+                       if args.use_generic_device
+                       else ns.get_device_path())
+
+
+        config = database.ConnectionConfig(
+            device=device_path,
+            backend=args.io_backend,
+            use_fdp=args.use_fdp,
+            fdp_mapping=args.fdp_mapping,
+            memory=mem_mb,
+            threads=args.threads,
+            ns_id=ns_id,
+            extension_path=args.extension_path,
+            db_configs={benchmark_name: db_configs_dict[benchmark_name]},
+        )
+        print(f"[child:{benchmark_name}] DB on {device_path} "
+              f"(ns_id={ns_id}, mem={mem_mb}MB, temp={temp_gb}GB)", flush=True)
+        db = database.Database(args.threads, mem_mb, temp_gb, config)
+        cursor = db.attach(benchmark_name)
+
+    task_filename = f"{base_name}_{benchmark_name}_task{task_idx}.csv"
+    task_filepath = os.path.join(target_dir, task_filename)
+    out_f = open(task_filepath, "w", newline="\n")
+    out_f.write(HEADERS.get(benchmark_name, "name;metrics\n"))
+    out_f.flush()
+
+    dummy_coord = None
+    if pause_req and paused_ack and release_ev:
+        class SubprocessWorkerHandle:
+            def __init__(self, name="", clock=None):
+                self.name = name
+                self.clock = clock
+                self._pause_requested = pause_req
+                self._paused = paused_ack
+                self._release = release_ev
+
+            def checkpoint_if_requested(self, label="") -> bool:
+                if not self._pause_requested.is_set():
+                    return False
+                if self.clock is not None:
+                    self.clock.pause()
+                self._paused.set()
+                self._release.wait()
+                if self.clock is not None:
+                    self.clock.resume()
+                return True
+        import runner.factory as factory_module
+        factory_module.WorkerHandle = SubprocessWorkerHandle
+        dummy_coord = _PassthroughCoordinator()
+
+    try:
+        run_with_duration = args.duration > 0
+        run_bench, setup_bench = create_benchmark_runner(
+            benchmark_name, run_with_duration, args.checkpoint_mode,
+            tpch_sf=args.tpch_sf, ycsb_sf=args.ycsb_sf,
+            coordinator=dummy_coord,
+            output_handle={benchmark_name: out_f},
+            wal_skip_threshold_bytes=args.wal_skip_threshold_bytes,
+        )
+
+        print(f"[child:{benchmark_name}] setup_bench...", flush=True)
+        setup_bench([cursor], args.input_dir)
+
+        if start_barrier is not None:
+            print(f"[child:{benchmark_name}] Waiting at barrier to sync start...", flush=True)
+            start_barrier.wait()
+
+        print(f"[child:{benchmark_name}] run_bench (duration_or_reps={duration_or_reps})...",
+              flush=True)
+        run_bench([cursor], duration_or_reps)
+
+        print(f"[child:{benchmark_name}] complete.", flush=True)
+    finally:
+        try: out_f.close()
+        except: pass
+        try: db.close()
+        except: pass
 
 def run_concurrent_benchmark(tasks: list, span: int):
     def _run(runner, cursor_chunk, span):
@@ -354,15 +424,14 @@ def run_fragmentation_loop(stop_event: Event, target_dir: str, output_log: str, 
             with open(timestamped_log, "a") as f:
                 f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.flush()
-
                 subprocess.run(
                     ["ionice", "-c", "3", "nice", "-n", "19", "/bin/bash", script, target_dir],
                     stdout=f, stderr=f)
         except Exception as e:
             print(f"Failed to run fragmentation script: {e}")
-
         if stop_event.wait(timeout=900):
             break
+
 
 def start_fragmentation_threads(args, target_dir, created_task_files):
     if not args.should_mount:
@@ -452,94 +521,177 @@ if __name__ == "__main__":
     if multi_workload:
         unallocated = (initial_device.unallocated_number_of_blocks
                        if initial_device is not None else 0)
-        setup_device_and_db = prepare_setup_func_multi_namespace(
+        device, namespace_infos = setup_namespaces_for_multi(
             args, benchmarks, unallocated_blocks=unallocated
         )
+
+        target_dir, base_name, device_output_file = generate_filenames(args)
+        run_with_duration = args.duration > 0
+        duration_or_reps = args.duration if run_with_duration else args.repetitions
+
+        mp_ctx = multiprocessing.get_context("spawn")
+        start_barrier = mp_ctx.Barrier(len(namespace_infos))
+        parent_workers = []
+        process_events = []
+
+        for info in namespace_infos:
+            if args.drain:
+                pause_req = mp_ctx.Event()
+                paused_ack = mp_ctx.Event()
+                release_ev = mp_ctx.Event()
+                
+                parent_handle = IPCWorkerHandleParent(info["benchmark"], pause_req, paused_ack, release_ev)
+                parent_workers.append(parent_handle)
+                process_events.append((pause_req, paused_ack, release_ev))
+            else:
+                process_events.append((None, None, None))
+
+        if args.drain:
+            coordinator = WAFCheckpoint(
+                device, device_output_file, enable_fdp=args.use_fdp,
+                drain_interval_s=args.drain_interval, drain_duration_s=args.drain_duration,
+                drain_final_duration_s=args.drain_final_duration,
+                drain_poll_interval_s=args.drain_poll_interval,
+            )
+            for w in parent_workers:
+                coordinator.add_worker(w)
+            coordinator.start()
+            stop_measurement = coordinator.stop
+        else:
+            stop_measurement = start_device_measurements(
+                device, device_output_file, enable_fdp=args.use_fdp
+            )
+
+        created_task_files = []
+        frag_stop_event, frag_threads = start_fragmentation_threads(
+            args, target_dir, created_task_files
+        )
+
+        processes = []
+        for task_idx, (info, events) in enumerate(zip(namespace_infos, process_events)):
+            pause_req, paused_ack, release_ev = events
+            p = mp_ctx.Process(
+                target=_run_workload_in_subprocess,
+                args=(info["benchmark"], info["ns_id"], args, duration_or_reps,
+                      target_dir, base_name, task_idx, info["mount_path"],
+                      start_barrier, pause_req, paused_ack, release_ev),
+                name=f"workload-{info['benchmark']}",
+            )
+            p.start()
+            processes.append(p)
+            print(f"[parent] Spawned '{info['benchmark']}' (pid={p.pid}, ns_id={info['ns_id']})")
+
+        exit_codes = {}
+        for p in processes:
+            p.join()
+            exit_codes[p.name] = p.exitcode
+            print(f"[parent] '{p.name}' exited (code={p.exitcode})")
+
+        stop_measurement()
+
+        if frag_stop_event is not None:
+            frag_stop_event.set()
+            for t in frag_threads:
+                if t.is_alive():
+                    t.join(timeout=5)
+
+        task_files = [
+            os.path.join(target_dir, f"{base_name}_{info['benchmark']}_task{i}.csv")
+            for i, info in enumerate(namespace_infos)
+        ]
+
+        any_failed = any(code != 0 for code in exit_codes.values())
+        status = "with failures" if any_failed else "successfully"
+        print(f"\n--- Run Complete {status}: {target_dir} ---")
+        print(f"Global WAF File: {os.path.basename(device_output_file)}")
+        print(f"Task Metric Files: {[os.path.basename(f) for f in (task_files + created_task_files)]}")
+        if any_failed:
+            print(f"Subprocess exit codes: {exit_codes}")
+
     else:
         setup_device_and_db = prepare_setup_func(args, namespace_identities)
 
-    target_dir, base_name, device_output_file = generate_filenames(args)
-    run_with_duration = args.duration > 0
-    db, cursors, device = setup_device_and_db()
+        target_dir, base_name, device_output_file = generate_filenames(args)
+        run_with_duration = args.duration > 0
+        db, cursors, device = setup_device_and_db()
 
-    tasks = []
-    all_open_files = []
-    created_task_files = []
+        tasks = []
+        all_open_files = []
+        created_task_files = []
 
-    # Measure Fragmentation for mounted runs
-    frag_stop_event, frag_threads = start_fragmentation_threads(args, target_dir, created_task_files)
+        frag_stop_event, frag_threads = start_fragmentation_threads(args, target_dir, created_task_files)
 
-    cursor_chunks = []
-    current = 0
-    for count in benchmark_ns_counts:
-        cursor_chunks.append(cursors[current : current + count])
-        current += count
+        cursor_chunks = []
+        current = 0
+        for count in benchmark_ns_counts:
+            cursor_chunks.append(cursors[current : current + count])
+            current += count
 
-    coordinator = None
-    if args.drain:
-        coordinator = WAFCheckpoint(
-            device, device_output_file, enable_fdp=args.use_fdp,
-            drain_interval_s=args.drain_interval, drain_duration_s=args.drain_duration,
-            drain_final_duration_s=args.drain_final_duration,
-            drain_poll_interval_s=args.drain_poll_interval,
-        )
-        coordinator.start()
-        stop_measurement = coordinator.stop
-    else:
-        stop_measurement = start_device_measurements(device, device_output_file, enable_fdp=args.use_fdp)
+        coordinator = None
+        if args.drain:
+            coordinator = WAFCheckpoint(
+                device, device_output_file, enable_fdp=args.use_fdp,
+                drain_interval_s=args.drain_interval, drain_duration_s=args.drain_duration,
+                drain_final_duration_s=args.drain_final_duration,
+                drain_poll_interval_s=args.drain_poll_interval,
+            )
+            coordinator.start()
+            stop_measurement = coordinator.stop
+        else:
+            stop_measurement = start_device_measurements(device, device_output_file, enable_fdp=args.use_fdp)
 
-    for task_idx, (b_name, cursor_chunk) in enumerate(zip(benchmarks, cursor_chunks)):
-        task_filename = f"{base_name}_{b_name}_task{task_idx}.csv"
-        task_filepath = os.path.join(target_dir, task_filename)
-        created_task_files.append(task_filepath)
-        f = open(task_filepath, "w", newline="\n")
-        f.write(HEADERS.get(b_name, "name;metrics\n"))
-        f.flush()
-        all_open_files.append(f)
-        task_output_handle = {b_name: f}
+        for task_idx, (b_name, cursor_chunk) in enumerate(zip(benchmarks, cursor_chunks)):
+            task_filename = f"{base_name}_{b_name}_task{task_idx}.csv"
+            task_filepath = os.path.join(target_dir, task_filename)
+            created_task_files.append(task_filepath)
+            f = open(task_filepath, "w", newline="\n")
+            f.write(HEADERS.get(b_name, "name;metrics\n"))
+            f.flush()
+            all_open_files.append(f)
+            task_output_handle = {b_name: f}
 
-        run_bench, setup_bench = create_benchmark_runner(
-            b_name, run_with_duration, args.checkpoint_mode,
-            tpch_sf=args.tpch_sf, ycsb_sf=args.ycsb_sf,
-            coordinator=coordinator, output_handle=task_output_handle,
-            wal_skip_threshold_bytes=args.wal_skip_threshold_bytes,
-        )
-        print(f"Setting up {b_name} task {task_idx} on cursors {[c.db_name for c in cursor_chunk]}...")
-        setup_bench(cursor_chunk, args.input_dir)
-        tasks.append((run_bench, cursor_chunk))
+            run_bench, setup_bench = create_benchmark_runner(
+                b_name, run_with_duration, args.checkpoint_mode,
+                tpch_sf=args.tpch_sf, ycsb_sf=args.ycsb_sf,
+                coordinator=coordinator, output_handle=task_output_handle,
+                wal_skip_threshold_bytes=args.wal_skip_threshold_bytes,
+            )
+            print(f"Setting up {b_name} task {task_idx} on cursors {[c.db_name for c in cursor_chunk]}...")
+            setup_bench(cursor_chunk, args.input_dir)
+            tasks.append((run_bench, cursor_chunk))
 
-    if args.parallel > 0:
-        print(f"Running {len(tasks)} workloads CONCURRENTLY...")
-        metric_results = run_concurrent_benchmark(tasks, args.duration if run_with_duration else args.repetitions)
-    else:
-        print(f"Running {len(tasks)} workloads SEQUENTIALLY...")
-        metric_results = {}
-        for runner_func, cursor_chunk in tasks:
-            res = runner_func(cursor_chunk, args.duration if run_with_duration else args.repetitions)
-            for key, rows in res.items():
-                metric_results.setdefault(key, []).extend(rows)
+        if args.parallel > 0:
+            print(f"Running {len(tasks)} workloads CONCURRENTLY...")
+            metric_results = run_concurrent_benchmark(tasks, args.duration if run_with_duration else args.repetitions)
+        else:
+            print(f"Running {len(tasks)} workloads SEQUENTIALLY...")
+            metric_results = {}
+            for runner_func, cursor_chunk in tasks:
+                res = runner_func(cursor_chunk, args.duration if run_with_duration else args.repetitions)
+                for key, rows in res.items():
+                    metric_results.setdefault(key, []).extend(rows)
 
-    stop_measurement()
+        stop_measurement()
 
-    if frag_stop_event is not None:
-        frag_stop_event.set()
-        for t in frag_threads:
-            if t.is_alive():
-                t.join(timeout=5)
+        if frag_stop_event is not None:
+            frag_stop_event.set()
+            for t in frag_threads:
+                if t.is_alive():
+                    t.join(timeout=5)
 
-    for f in all_open_files:
-        try: f.close()
+        for f in all_open_files:
+            try: f.close()
+            except: pass
+
+        try:
+            if isinstance(db, list):
+                for d in db:
+                    try: d.close()
+                    except: pass
+            else:
+                db.close()
         except: pass
 
-    try:
-        if isinstance(db, list):
-            for d in db:
-                try: d.close()
-                except: pass
-        else:
-            db.close()
-    except: pass
-
-    print(f"\n--- Run Complete: {target_dir} ---")
-    print(f"Global WAF File: {os.path.basename(device_output_file)}")
-    print(f"Task Metric Files: {[os.path.basename(f) for f in created_task_files]}")
+        print(f"\n--- Run Complete: {target_dir} ---")
+        print(f"Global WAF File: {os.path.basename(device_output_file)}")
+        print(f"Task Metric Files: {[os.path.basename(f) for f in created_task_files]}")

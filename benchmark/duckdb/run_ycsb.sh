@@ -12,7 +12,7 @@
     EXTENSION_PATH="$DUCKDB_PATH/build/release/extension/nvmefs/nvmefs.duckdb_extension"
     VENV_DIR=".venv_v2_new"
 
-    USE_MOUNT=1
+    USE_MOUNT=0
     BACKEND_ARGS=()
     if [ "$USE_MOUNT" -eq 1 ]; then
         BACKEND_LABEL="mount"
@@ -23,7 +23,7 @@
     fi
 
     # WAF Drain
-    ENABLE_DRAIN=1
+    ENABLE_DRAIN=0
     DRAIN_INTERVAL=1800
     DRAIN_DURATION=660
     DRAIN_FINAL_DURATION=1800
@@ -32,7 +32,7 @@
         DRAIN_ARGS=(--drain --drain-interval "$DRAIN_INTERVAL" --drain-duration "$DRAIN_DURATION" --drain-final-duration "$DRAIN_FINAL_DURATION")
     fi
 
-    ENABLE_FILLER=1
+    ENABLE_FILLER=0
     FILLER_ARGS=()
     if [ "$ENABLE_FILLER" -eq 1 ]; then
         FILLER_ARGS=(--filler)
@@ -50,11 +50,11 @@
         ["nofdp"]=""
         ["baseline"]=".db:1,.wal:1,.tmp:1"
         ["temp-isolated"]=".db:1,.wal:1,.tmp:2"
-        ["wal-isolated"]=".db:1,.wal:2,.tmp:1"
+        ["wal-isolated"]="ycsb.db:1,ycsb.wal:2,.tmp:1"
         ["fully-isolated"]=".db:1,.wal:2,.tmp:3"
     )
 
-    FDP_STRATEGIES=("nofdp")
+    FDP_STRATEGIES=("wal-isolated")
 
     # ==========================================
     # Environment Setup
@@ -81,7 +81,7 @@
     )
 
     # WAL 
-    PRECOND_STATES=(1)
+    PRECOND_STATES=(0)
     FIO_FILE="fio/uniform.fio"
     SETTLE_SECONDS=900
 

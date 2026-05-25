@@ -128,6 +128,17 @@ class NvmeDevice:
         Enables flexible data placement(FDP) on the device
         """
         run_cmd(f"nvme fdp feature {self.device_path} --endgrp-id={endgrp_id} --enable-conf-idx=0")
+    
+    def enable_data_placement_directive(self, namespace_id: int):
+        """
+        Enables Data Placement Directive (Type 2) on the specified namespace.
+        Must be called AFTER the namespace is created, attached, and recognized by the OS.
+        """
+        ns_path = f"{self.device_path}n{namespace_id}"
+        print(f"  Enabling Data Placement Directive on {ns_path} (via {self.device_path} -n {namespace_id})...")
+        
+        # Target the character device directly and use -n to force the correct NSID
+        run_cmd(f"nvme dir-send {self.device_path} -n {namespace_id} --dir-type=0 --dir-oper=1 --target-dir=2 --endir=1")
 
     def disable_fdp(self, endgrp_id: int = 1):
         """
@@ -162,7 +173,11 @@ class NvmeDevice:
         print(f"Creating namespace {namespace_id} with {ns_number_of_blocks} blocks")
         
         if enable_fdp:
-            handles = fdp_handles if fdp_handles else [1, 2, 3, 4]
+            handles = fdp_handles if fdp_handles else [0, 1, 2, 3, 4]
+            if 0 not in handles:
+                handles = [0] + handles
+
+            handles = sorted(list(set(handles)))
             nphndls = len(handles)
             phndls = ",".join(str(h) for h in handles)
             print(f"Attaching {nphndls} placement handle(s): {phndls}")
@@ -177,6 +192,9 @@ class NvmeDevice:
 
         subprocess.run("udevadm settle", shell=True, stderr=subprocess.DEVNULL)
         time.sleep(5)
+
+        if enable_fdp:
+            self.enable_data_placement_directive(namespace_id)
 
         # Sequential Fill + Random Scramble/Writes
         if precondition:
@@ -241,9 +259,14 @@ class NvmeDevice:
             raise ValueError(f"workload_blocks ({workload_blocks}) > ns_size_blocks ({ns_size_blocks})")
 
         if enable_fdp:
-            handles = fdp_handles if fdp_handles else [1, 2, 3, 4]
+            handles = fdp_handles if fdp_handles else [0, 1, 2, 3, 4]
+            if 0 not in handles:
+                handles = [0] + handles
+                
+            handles = sorted(list(set(handles)))
             nphndls = len(handles)
             phndls = ",".join(str(h) for h in handles)
+
             print(f"  Attaching {nphndls} placement handle(s): {phndls}")
             run_cmd(
                 f"nvme create-ns {self.device_path} --nsze={ns_size_blocks} "
@@ -262,6 +285,9 @@ class NvmeDevice:
         ns = NvmeDeviceNamespace(self.device_path, namespace_id, ns_size_blocks, is_mounted=False)
         subprocess.run("udevadm settle", shell=True, stderr=subprocess.DEVNULL)
         time.sleep(5)
+
+        if enable_fdp:
+            self.enable_data_placement_directive(namespace_id)
 
         self.namespaces.append(ns)
         return ns
@@ -507,22 +533,36 @@ def verify_steady_state(log_file="steadystate_iops.1.log", evaluation_window_sam
     else:
         print("The NVMe Drive is not in a steady state")
 
-def parse_fdp_handles(mapping: str) -> list[int]:
+def parse_fdp_handles(mapping: str, benchmark_filter: str = None) -> list[int]:
     """
-    Extract sorted, unique non-zero RUH IDs from a mapping string.
-    'tpch.db:1,tpch.wal:2,ycsb.db:3,.tmp:5' -> [1, 2, 3, 5]
-    RUH 0 is the default and is always available; don't include it.
+    Extract RUH IDs from a mapping string, filtered by benchmark.
+    Explicitly includes RUH 0 as the mandatory default fallback.
+    Pads the array so the array index (PI) mathematically matches the physical RUH.
     """
     if not mapping:
-        return []
-    handles = set()
+        return [0]
+
+    handles = {0}
     for pair in mapping.split(','):
         kv = pair.split(':')
         if len(kv) == 2:
+            filename = kv[0].strip()
             try:
                 ruh = int(kv[1].strip())
-                if ruh > 0:
-                    handles.add(ruh)
             except ValueError:
-                pass
-    return sorted(handles)
+                continue
+            
+            if benchmark_filter is None:
+                handles.add(ruh)
+            else:
+                # Include if it matches the benchmark prefix (e.g., tpch.db, ycsb.wal)
+                if filename.startswith(benchmark_filter):
+                    handles.add(ruh)
+                # Include .tmp ONLY if the benchmark is TPCH (since YCSB doesn't spill)
+                elif filename.startswith(".tmp") and benchmark_filter == "tpch":
+                    handles.add(ruh)
+
+    max_ruh = max(handles)
+    # Pad the list so the index (PI) matches the physical RUH value
+    padded_phndls = [i if i in handles else 0 for i in range(max_ruh + 1)]
+    return padded_phndls

@@ -25,6 +25,8 @@ def setup_ycsb_benchmark(cursors: list[Cursor], input_dir_path: str,
     total_rows = scale_factor * 100_000
     chunk_size = 1_000_000
 
+    print(f"[DEBUG] Current Cursor DB Name: {c.db_name}")
+
     for offset in range(0, total_rows, chunk_size):
         c.execute(f"""
             INSERT INTO {c.db_name}.usertable

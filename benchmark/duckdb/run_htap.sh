@@ -12,7 +12,7 @@ DUCKDB_PATH="$HOME/nvmefs2"
 EXTENSION_PATH="$DUCKDB_PATH/build/release/extension/nvmefs/nvmefs.duckdb_extension"
 VENV_DIR=".venv_v2_new"
 
-USE_MOUNT=1
+USE_MOUNT=0
 BACKEND_ARGS=()
 if [ "$USE_MOUNT" -eq 1 ]; then
     BACKEND_LABEL="mount"
@@ -23,7 +23,7 @@ else
 fi
 
 # WAF Drain
-ENABLE_DRAIN=1
+ENABLE_DRAIN=0
 DRAIN_INTERVAL=1800
 DRAIN_DURATION=660
 DRAIN_FINAL_DURATION=1800
@@ -42,7 +42,7 @@ fi
 # Fragmentation Script
 FRAGMENTATION_FILE="scripts/fragmentation.sh"
 
-ENABLE_FILLER=1
+ENABLE_FILLER=0
 
 # ==========================================
 # HTAP FDP mappings — per-database keys so TPC-H and YCSB streams never collide
@@ -53,10 +53,10 @@ declare -A FDP_MAPPINGS=(
     ["temp-isolated"]="tpch.db:1,tpch.wal:1,ycsb.db:1,ycsb.wal:1,.tmp:2"
     ["wal-isolated"]="tpch.db:1,tpch.wal:2,ycsb.db:1,ycsb.wal:3,.tmp:1"
     ["db-isolated"]="tpch.db:1,tpch.wal:1,ycsb.db:2,ycsb.wal:2,.tmp:3"
-    ["fully-isolated"]="tpch.db:1,tpch.wal:2,ycsb.db:3,ycsb.wal:4,.tmp:5"
+    ["fully-isolated"]="tpch.db:1,tpch.wal:2,.tmp:3,ycsb.db:4,ycsb.wal:5"
 )
 
-FDP_STRATEGIES=("nofdp") # "fully-isolated"
+FDP_STRATEGIES=("fully-isolated") # "fully-isolated"
 
 # ==========================================
 # Environment Setup
@@ -75,13 +75,10 @@ fi
 
 # ==========================================
 # Workload Configurations
-# ------------------------------------------
-# Per-config (9 fields):
-#   TPCH_SF YCSB_SF TPCH_MEM YCSB_MEM TPCH_DB TPCH_TEMP YCSB_DB YCSB_TEMP DUR
 # ==========================================
 CONFIGS=(
     # TPCH_SF YCSB_SF TPCH_MEM YCSB_MEM TPCH_DB TPCH_TEMP YCSB_DB YCSB_TEMP DUR
-    "3000     200      12000    45000    880     250       400     5        480"
+    "3000     200      38000    45000    820     250       380     5        480"
 )
 
 CHECKPOINT_MODES=("auto")
