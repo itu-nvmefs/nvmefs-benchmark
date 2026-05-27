@@ -23,7 +23,7 @@ else
 fi
 
 # WAF Drain
-ENABLE_DRAIN=1
+ENABLE_DRAIN=0
 DRAIN_INTERVAL=1800
 DRAIN_DURATION=660
 DRAIN_FINAL_DURATION=1800
@@ -42,21 +42,40 @@ fi
 # Fragmentation Script
 FRAGMENTATION_FILE="scripts/fragmentation.sh"
 
-ENABLE_FILLER=1
+# ==========================================
+# Filler and Precondition
+# ==========================================
+ENABLE_FILLER=0
+FILLER_ARGS=()
+if [ "$ENABLE_FILLER" -eq 1 ]; then
+    FILLER_ARGS=(--filler)
+    FILLER_LABEL="filler"
+else
+    FILLER_LABEL="nofiller"
+fi
+
+CHECKPOINT_MODES=("auto")
+PRECOND_STATES=(0)
+SETTLE_SECONDS=900
 
 # ==========================================
-# HTAP FDP mappings — per-database keys so TPC-H and YCSB streams never collide
+# HTAP FDP mappings
 # ==========================================
 declare -A FDP_MAPPINGS=(
     ["nofdp"]=""
     ["baseline"]="tpch.db:1,tpch.wal:1,ycsb.db:1,ycsb.wal:1,.tmp:1"
     ["temp-isolated"]="tpch.db:1,tpch.wal:1,ycsb.db:1,ycsb.wal:1,.tmp:2"
-    ["wal-isolated"]="tpch.db:1,tpch.wal:2,ycsb.db:1,ycsb.wal:3,.tmp:1"
-    ["db-isolated"]="tpch.db:1,tpch.wal:1,ycsb.db:2,ycsb.wal:2,.tmp:3"
-    ["fully-isolated"]="tpch.db:1,tpch.wal:2,.tmp:3,ycsb.db:4,ycsb.wal:5"
 )
 
-FDP_STRATEGIES=("fully-isolated") # "fully-isolated"
+FDP_STRATEGIES=("no-fdp")
+
+# ==========================================
+# Workload Configurations
+# ==========================================
+CONFIGS=(
+    # TPCH_SF YCSB_SF TPCH_MEM YCSB_MEM TPCH_DB TPCH_TEMP YCSB_DB YCSB_TEMP DUR
+    "3000     200      38000    45000    820     250       380     5        480"
+)
 
 # ==========================================
 # Environment Setup
@@ -73,21 +92,9 @@ else
     pip3 install duckdb==1.5.2
 fi
 
-# ==========================================
-# Workload Configurations
-# ==========================================
-CONFIGS=(
-    # TPCH_SF YCSB_SF TPCH_MEM YCSB_MEM TPCH_DB TPCH_TEMP YCSB_DB YCSB_TEMP DUR
-    "3000     200      38000    45000    820     250       380     5        480"
-)
-
-CHECKPOINT_MODES=("auto")
-PRECOND_STATES=(1)
-SETTLE_SECONDS=900
-
 SUITE_START_TIMESTAMP=$(date +%s)
 SUITE_START_STR=$(date '+%Y-%m-%d %H:%M:%S')
-echo "Starting HTAP Benchmarks at $SUITE_START_STR"
+echo "Starting Single-Namespace HTAP Benchmarks at $SUITE_START_STR"
 
 # ==========================================
 # Ensure YCSB seed databases exist
@@ -123,28 +130,25 @@ for config in "${CONFIGS[@]}"; do
             YCSB_DB_GB YCSB_TEMP_GB \
             DURATION_MIN <<< "$config"
 
+    # Calculate Single Namespace Total Capacity
     TPCH_BASE_BLOCKS=$(( TPCH_DB_GB * BLOCKS_PER_GB \
                        + TPCH_TEMP_GB * BLOCKS_PER_GB \
                        + WAL_MB_PER_DB * BLOCKS_PER_MB ))
-    TPCH_WORKLOAD_BLOCKS=$(( TPCH_BASE_BLOCKS + (TPCH_BASE_BLOCKS * SLACK_PCT / 100) ))
-
+                       
     YCSB_BASE_BLOCKS=$(( YCSB_DB_GB * BLOCKS_PER_GB \
                        + YCSB_TEMP_GB * BLOCKS_PER_GB \
                        + WAL_MB_PER_DB * BLOCKS_PER_MB ))
-    YCSB_WORKLOAD_BLOCKS=$(( YCSB_BASE_BLOCKS + (YCSB_BASE_BLOCKS * SLACK_PCT / 100) ))
+                       
+    TOTAL_BASE_BLOCKS=$(( TPCH_BASE_BLOCKS + YCSB_BASE_BLOCKS ))
+    WORKLOAD_NS_SIZE=$(( TOTAL_BASE_BLOCKS + (TOTAL_BASE_BLOCKS * SLACK_PCT / 100) ))
 
     DB_CONFIGS="tpch:${TPCH_DB_GB}GB,ycsb:${YCSB_DB_GB}GB"
-    WORKLOAD_BLOCKS="tpch:${TPCH_WORKLOAD_BLOCKS},ycsb:${YCSB_WORKLOAD_BLOCKS}"
     TEMP_SIZES="tpch:${TPCH_TEMP_GB},ycsb:${YCSB_TEMP_GB}"
     MEM_LIMITS="tpch:${TPCH_MEM_MB},ycsb:${YCSB_MEM_MB}"
-
-    if [ "$ENABLE_FILLER" -eq 1 ]; then
-        NS_SIZES="tpch:${TPCH_WORKLOAD_BLOCKS}"
-        FILLER_LABEL="filler"
-    else
-        NS_SIZES="tpch:${TPCH_WORKLOAD_BLOCKS},ycsb:${YCSB_WORKLOAD_BLOCKS}"
-        FILLER_LABEL="nofiller"
-    fi
+    
+    # Dummy mirror values to bypass the args.py strict validation
+    NS_SIZES="tpch:${WORKLOAD_NS_SIZE},ycsb:${WORKLOAD_NS_SIZE}"
+    WORKLOAD_BLOCKS="tpch:${TOTAL_BASE_BLOCKS},ycsb:${TOTAL_BASE_BLOCKS}"
 
     for precond in "${PRECOND_STATES[@]}"; do
         if [ "$precond" -eq 1 ]; then
@@ -163,9 +167,9 @@ for config in "${CONFIGS[@]}"; do
                     FDP_ARGS=(--fdp --fdp_mapping "$MAPPING")
                 fi
 
-                echo "Running HTAP | TPCH_SF: ${TPCH_SF} | YCSB_SF: ${YCSB_SF} | tpch_mem: ${TPCH_MEM_MB}MB | ycsb_mem: ${YCSB_MEM_MB}MB | ${FILLER_LABEL} | Duration: ${DURATION_MIN}min | FDP: ${strategy}"
+                echo "Running Single-NS HTAP | TPCH_SF: ${TPCH_SF} | YCSB_SF: ${YCSB_SF} | ${FILLER_LABEL} | FDP: ${strategy}"
                 TIMESTAMP=$(date '+%Y%m%d_%H%M%S')
-                RUN_ID="run_${BACKEND_LABEL}_${PRECOND_LABEL}_${FILLER_LABEL}_htap_tsf${TPCH_SF}_ysf${YCSB_SF}_tmem${TPCH_MEM_MB}_ymem${YCSB_MEM_MB}_ckpt-${ckpt}_fdp-${strategy}_${TIMESTAMP}"
+                RUN_ID="run_single_ns_${BACKEND_LABEL}_${PRECOND_LABEL}_${FILLER_LABEL}_htap_tsf${TPCH_SF}_ysf${YCSB_SF}_ckpt-${ckpt}_fdp-${strategy}_${TIMESTAMP}"
 
                 python3 -u benchmark.py tpch,ycsb \
                     --run_id "$RUN_ID" \
@@ -178,15 +182,20 @@ for config in "${CONFIGS[@]}"; do
                     --ycsb_sf $YCSB_SF \
                     --threads $THREADS \
                     --db_configs "$DB_CONFIGS" \
+                    --namespace_size $WORKLOAD_NS_SIZE \
                     --ns_sizes "$NS_SIZES" \
                     --workload_blocks "$WORKLOAD_BLOCKS" \
                     --temp_sizes "$TEMP_SIZES" \
+                    --max_temp_size $TPCH_TEMP_GB \
                     --checkpoint_mode "$ckpt" \
                     --frag_script_path $FRAGMENTATION_FILE \
+                    --single_namespace \
                     "${BACKEND_ARGS[@]}" \
                     "${PRECOND_ARGS[@]}" \
                     "${DRAIN_ARGS[@]}" \
-                    "${FDP_ARGS[@]}" 
+                    "${FILLER_ARGS[@]}" \
+                    "${FDP_ARGS[@]}" \
+                    "${WAL_SKIP_ARGS[@]}"
 
                 sleep 1
             done

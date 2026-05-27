@@ -23,7 +23,7 @@
     fi
 
     # WAF Drain
-    ENABLE_DRAIN=0
+    ENABLE_DRAIN=1
     DRAIN_INTERVAL=1800
     DRAIN_DURATION=660
     DRAIN_FINAL_DURATION=1800
@@ -32,7 +32,7 @@
         DRAIN_ARGS=(--drain --drain-interval "$DRAIN_INTERVAL" --drain-duration "$DRAIN_DURATION" --drain-final-duration "$DRAIN_FINAL_DURATION")
     fi
 
-    ENABLE_FILLER=0
+    ENABLE_FILLER=1
     FILLER_ARGS=()
     if [ "$ENABLE_FILLER" -eq 1 ]; then
         FILLER_ARGS=(--filler)
@@ -51,10 +51,10 @@
         ["baseline"]=".db:1,.wal:1,.tmp:1"
         ["temp-isolated"]=".db:1,.wal:1,.tmp:2"
         ["wal-isolated"]="ycsb.db:1,ycsb.wal:2,.tmp:1"
-        ["fully-isolated"]=".db:1,.wal:2,.tmp:3"
+        ["fully-isolated"]=".db:1,.wal:2,.tmp:0"
     )
 
-    FDP_STRATEGIES=("wal-isolated")
+    FDP_STRATEGIES=("fully-isolated")
 
     # ==========================================
     # Environment Setup
@@ -77,11 +77,11 @@
 
     # YCSB Configs: SF MEM_LIMIT DB_GB TEMP_GB DURATION_MIN
     CONFIGS=(
-        "200 45000 395 5 480"
+        "200 45000 390 5 480"
     )
 
     # WAL 
-    PRECOND_STATES=(0)
+    PRECOND_STATES=(1)
     FIO_FILE="fio/uniform.fio"
     SETTLE_SECONDS=900
 

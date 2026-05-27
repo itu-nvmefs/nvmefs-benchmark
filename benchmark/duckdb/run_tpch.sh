@@ -47,7 +47,7 @@ declare -A FDP_MAPPINGS=(
     ["baseline"]=".db:1,.wal:1,.tmp:1"
     ["temp-isolated"]=".db:1,.wal:1,.tmp:2"
     ["wal-isolated"]=".db:1,.wal:2,.tmp:1"
-    ["fully-isolated"]=".db:1,.wal:2,.tmp:3"
+    ["fully-isolated"]=".db:1,.wal:0,.tmp:2"
 )
 
 # Which strategies to run this suite.
@@ -95,7 +95,7 @@ SUITE_START_STR=$(date '+%Y-%m-%d %H:%M:%S')
 
 # ==========================================
 # TPC-H Suite
-# ==========================================
+# ========================= =================
 for config in "${CONFIGS[@]}"; do
     read -r TPCH_SF MEM_LIMIT DB_GB TEMP_SIZE DURATION_MIN <<< "$config"
     

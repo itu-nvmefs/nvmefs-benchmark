@@ -39,6 +39,7 @@ class Arguments:
     temp_size: int = 200
     wal_skip_threshold_bytes: int = 100000
     frag_script_path: str = ""
+    single_namespace: bool = False
 
     ns_sizes: str = ""   
     temp_sizes: str = "" 
@@ -125,16 +126,12 @@ class Arguments:
                 (self.repetitions != 0 and self.duration != 0):
             print("Either duration or repetitions must be set (but not both)")
             return False
-        if self.is_multi_workload():
+        if self.is_multi_workload() and not getattr(self, "single_namespace", False):
             if not self.ns_sizes:
-                print("Multi-workload benchmarks require --ns_sizes "
-                      "(per-workload namespace size in blocks, "
-                      "e.g., 'tpch:393216000,ycsb:209715200').")
+                print("Multi-workload benchmarks require --ns_sizes...")
                 return False
             if not self.workload_blocks:
-                print("Multi-workload benchmarks require --workload_blocks "
-                      "(per-workload workload-region size in blocks, "
-                      "e.g., 'tpch:283525120,ycsb:107479040').")
+                print("Multi-workload benchmarks require --workload_blocks...")
                 return False
             if not self.db_configs:
                 print("Multi-workload benchmarks require --db_configs "
@@ -286,6 +283,8 @@ class Arguments:
                                  "each DuckDB instance gets the limit named for its benchmark.")
         parser.add_argument("--random_write_seconds", type=int, default=1800,
                             help="Random-write preconditioning duration per workload region (default 1800s)")
+        parser.add_argument("--single_namespace", action="store_true", default=False,
+                            help="Force concurrent workloads to share a single NVMe namespace")
 
         args = parser.parse_args()
         
@@ -330,6 +329,7 @@ class Arguments:
             workload_blocks=args.workload_blocks,
             temp_sizes=args.temp_sizes,
             random_write_seconds=args.random_write_seconds,
+            single_namespace=args.single_namespace,
         )
 
         if not arguments.valid():

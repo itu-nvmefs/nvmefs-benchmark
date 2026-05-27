@@ -484,7 +484,7 @@ if __name__ == "__main__":
         args.threads = max(1, args.threads // num_parallel)
         print(f"Partitioning CPU: {args.threads} threads per instance.")
 
-    multi_workload = args.is_multi_workload()
+    multi_workload = args.is_multi_workload() and not getattr(args, "single_namespace", False)
 
     benchmark_ns_counts = []
     namespace_identities = []
