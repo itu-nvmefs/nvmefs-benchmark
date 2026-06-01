@@ -38,18 +38,41 @@ class Arguments:
     db_configs: str = ""
     temp_size: int = 200
     wal_skip_threshold_bytes: int = 100000
+    frag_script_path: str = ""
+    single_namespace: bool = False
 
-    def get_memory_limit(self) -> int:
-        """Single shared memory budget for the whole DuckDB instance, in MB."""
+    ns_sizes: str = ""   
+    temp_sizes: str = "" 
+    workload_blocks: str = ""
+    random_write_seconds: int = 1800
+
+    def _parse_memory_dict(self) -> dict[str, int]:
         try:
-            return int(self.buffer_manager_mem_size)
+            int(self.buffer_manager_mem_size)
+            return {}
         except ValueError:
-            limits = {}
+            result = {}
             for pair in self.buffer_manager_mem_size.split(','):
-                k, v = pair.split('=')
-                limits[k.strip()] = int(v.strip())
-            return max(limits.values()) if limits else 50
-
+                sep = '=' if '=' in pair else ':'
+                k, v = pair.split(sep)
+                result[k.strip()] = int(v.strip())
+            return result
+ 
+    def get_memory_limit(self) -> int:
+        d = self._parse_memory_dict()
+        if not d:
+            try:
+                return int(self.buffer_manager_mem_size)
+            except ValueError:
+                return 50
+        return max(d.values())
+ 
+    def get_memory_limit_for(self, benchmark: str) -> int:
+        d = self._parse_memory_dict()
+        if benchmark in d:
+            return d[benchmark]
+        return self.get_memory_limit()
+ 
     def parse_db_configs(self) -> dict[str, int]:
         if not self.db_configs:
             return {}
@@ -59,7 +82,39 @@ class Arguments:
             size = size.strip().upper().rstrip('GB')
             result[name.strip()] = int(size)
         return result
-
+ 
+    @staticmethod
+    def _parse_blocks_csv(s: str) -> dict[str, int]:
+        """Parse 'name:N,name:M' into {name: int_blocks}."""
+        if not s:
+            return {}
+        result = {}
+        for pair in s.split(','):
+            name, size = pair.split(':')
+            result[name.strip()] = int(size.strip())
+        return result
+ 
+    def parse_ns_sizes(self) -> dict[str, int]:
+        """Per-workload namespace size in BLOCKS (precomputed by caller)."""
+        return self._parse_blocks_csv(self.ns_sizes)
+ 
+    def parse_workload_blocks(self) -> dict[str, int]:
+        """Per-workload workload-region size in BLOCKS (precomputed by caller)."""
+        return self._parse_blocks_csv(self.workload_blocks)
+ 
+    def parse_temp_sizes(self) -> dict[str, int]:
+        """Returns per-workload max_temp_directory_size in GB."""
+        if not self.temp_sizes:
+            return {}
+        result = {}
+        for pair in self.temp_sizes.split(','):
+            name, size = pair.split(':')
+            result[name.strip()] = int(size.strip().upper().rstrip('GB'))
+        return result
+ 
+    def is_multi_workload(self) -> bool:
+        return ',' in self.benchmark
+ 
     def valid(self) -> bool:
         if self.use_fdp and not self.device:
             print("--fdp requires --device_path")
@@ -68,9 +123,27 @@ class Arguments:
             print("--fdp requires --fdp_mapping")
             return False
         if (self.repetitions == 0 and self.duration == 0) or \
-        (self.repetitions != 0 and self.duration != 0):
+                (self.repetitions != 0 and self.duration != 0):
             print("Either duration or repetitions must be set (but not both)")
             return False
+        if self.is_multi_workload() and not getattr(self, "single_namespace", False):
+            if not self.ns_sizes:
+                print("Multi-workload benchmarks require --ns_sizes...")
+                return False
+            if not self.workload_blocks:
+                print("Multi-workload benchmarks require --workload_blocks...")
+                return False
+            if not self.db_configs:
+                print("Multi-workload benchmarks require --db_configs "
+                      "(e.g., 'tpch:880GB,ycsb:400GB').")
+                return False
+            if not self.temp_sizes:
+                print("Multi-workload benchmarks require --temp_sizes "
+                      "(per-workload DuckDB temp size in GB, "
+                      "e.g., 'tpch:200,ycsb:50'). "
+                      "Each DuckDB instance gets its own temp limit; "
+                      "--max_temp_size is single-workload only.")
+                return False
         return True
 
     @staticmethod
@@ -190,6 +263,28 @@ class Arguments:
         parser.add_argument("--wal_skip_threshold_bytes", type=int,
                     default=100000,
                     help="auto_checkpoint_skip_wal_threshold in raw bytes ")
+        
+        parser.add_argument("--frag_script_path", type=str, default="",
+                    help="Path to the shell script that checks fragmentation")
+        
+        parser.add_argument("--ns_sizes", type=str, default="",
+                            help="Per-workload namespace size in BLOCKS, "
+                                 "e.g., 'tpch:393216000,ycsb:209715200'. "
+                                 "The portion not used by the workload region "
+                                 "(see --workload_blocks) is fio-filled with "
+                                 "valid data as the in-namespace filler.")
+        parser.add_argument("--workload_blocks", type=str, default="",
+                            help="Per-workload workload-region size in BLOCKS, "
+                                 "e.g., 'tpch:283525120,ycsb:107479040'. "
+                                 "Must be < the matching --ns_sizes entry.")
+        parser.add_argument("--temp_sizes", type=str, default="",
+                            help="Per-workload DuckDB temp directory size (GB), "
+                                 "e.g., 'tpch:200,ycsb:50'. Required for multi-workload runs; "
+                                 "each DuckDB instance gets the limit named for its benchmark.")
+        parser.add_argument("--random_write_seconds", type=int, default=1800,
+                            help="Random-write preconditioning duration per workload region (default 1800s)")
+        parser.add_argument("--single_namespace", action="store_true", default=False,
+                            help="Force concurrent workloads to share a single NVMe namespace")
 
         args = parser.parse_args()
         
@@ -229,6 +324,12 @@ class Arguments:
             fdp_mapping=args.fdp_mapping,
             db_configs=args.db_configs,
             wal_skip_threshold_bytes=args.wal_skip_threshold_bytes,
+            frag_script_path=args.frag_script_path,
+            ns_sizes=args.ns_sizes,
+            workload_blocks=args.workload_blocks,
+            temp_sizes=args.temp_sizes,
+            random_write_seconds=args.random_write_seconds,
+            single_namespace=args.single_namespace,
         )
 
         if not arguments.valid():

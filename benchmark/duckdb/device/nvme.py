@@ -128,6 +128,17 @@ class NvmeDevice:
         Enables flexible data placement(FDP) on the device
         """
         run_cmd(f"nvme fdp feature {self.device_path} --endgrp-id={endgrp_id} --enable-conf-idx=0")
+    
+    def enable_data_placement_directive(self, namespace_id: int):
+        """
+        Enables Data Placement Directive (Type 2) on the specified namespace.
+        Must be called AFTER the namespace is created, attached, and recognized by the OS.
+        """
+        ns_path = f"{self.device_path}n{namespace_id}"
+        print(f"  Enabling Data Placement Directive on {ns_path} (via {self.device_path} -n {namespace_id})...")
+        
+        # Target the character device directly and use -n to force the correct NSID
+        run_cmd(f"nvme dir-send {self.device_path} -n {namespace_id} --dir-type=0 --dir-oper=1 --target-dir=2 --endir=1")
 
     def disable_fdp(self, endgrp_id: int = 1):
         """
@@ -162,7 +173,11 @@ class NvmeDevice:
         print(f"Creating namespace {namespace_id} with {ns_number_of_blocks} blocks")
         
         if enable_fdp:
-            handles = fdp_handles if fdp_handles else [1, 2, 3, 4]
+            handles = fdp_handles if fdp_handles else [0, 1, 2, 3, 4]
+            if 0 not in handles:
+                handles = [0] + handles
+
+            handles = sorted(list(set(handles)))
             nphndls = len(handles)
             phndls = ",".join(str(h) for h in handles)
             print(f"Attaching {nphndls} placement handle(s): {phndls}")
@@ -177,6 +192,9 @@ class NvmeDevice:
 
         subprocess.run("udevadm settle", shell=True, stderr=subprocess.DEVNULL)
         time.sleep(5)
+
+        if enable_fdp:
+            self.enable_data_placement_directive(namespace_id)
 
         # Sequential Fill + Random Scramble/Writes
         if precondition:
@@ -231,6 +249,133 @@ class NvmeDevice:
 
         self.namespaces.append(new_namespace)
         return new_namespace, mount_path
+
+    def create_workload_namespace(self, namespace_id: int, ns_size_blocks: int, workload_blocks: int = 0,
+        enable_fdp: bool = False, endgrp_id: int = 1, fdp_handles: list = None) -> NvmeDeviceNamespace:
+
+        if workload_blocks == 0:
+            workload_blocks = ns_size_blocks
+        if workload_blocks > ns_size_blocks:
+            raise ValueError(f"workload_blocks ({workload_blocks}) > ns_size_blocks ({ns_size_blocks})")
+
+        if enable_fdp:
+            handles = fdp_handles if fdp_handles else [0, 1, 2, 3, 4]
+            if 0 not in handles:
+                handles = [0] + handles
+                
+            handles = sorted(list(set(handles)))
+            nphndls = len(handles)
+            phndls = ",".join(str(h) for h in handles)
+
+            print(f"  Attaching {nphndls} placement handle(s): {phndls}")
+            run_cmd(
+                f"nvme create-ns {self.device_path} --nsze={ns_size_blocks} "
+                f"--ncap={ns_size_blocks} --flbas=0 --endg-id={endgrp_id} "
+                f"--nphndls={nphndls} --phndls={phndls}"
+            )
+        else:
+            run_cmd(
+                f"nvme create-ns {self.device_path} --nsze={ns_size_blocks} "
+                f"--ncap={ns_size_blocks} --flbas=0"
+            )
+
+        run_cmd(f"nvme attach-ns {self.device_path} --namespace-id={namespace_id} --controllers=0x7")
+        run_cmd(f"nvme ns-rescan {self.device_path}")
+
+        ns = NvmeDeviceNamespace(self.device_path, namespace_id, ns_size_blocks, is_mounted=False)
+        subprocess.run("udevadm settle", shell=True, stderr=subprocess.DEVNULL)
+        time.sleep(5)
+
+        if enable_fdp:
+            self.enable_data_placement_directive(namespace_id)
+
+        self.namespaces.append(ns)
+        return ns
+    
+    def fill_filler_region(self, namespace: NvmeDeviceNamespace, workload_blocks: int,
+        ns_size_blocks: int, passes: int = 2):
+        filler_blocks = ns_size_blocks - workload_blocks
+        # Populate filler region with valid sequential data
+        if filler_blocks > 0:
+            filler_offset = workload_blocks * self.block_size
+            filler_size = filler_blocks * self.block_size
+            print(
+                f"  Populating filler region NS {namespace.namespace_id}: "
+                f"offset={filler_offset:,}B size={filler_size:,}B"
+            )
+
+            for i in range(passes):
+                print(f"    Filler pass {i + 1}/{passes}...")
+                run_cmd(
+                    f"fio --name=ns{namespace.namespace_id}-filler-{i} "
+                    f"--filename={namespace.get_device_path()} "
+                    f"--rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio "
+                    f"--refill_buffers=1 --scramble_buffers=1 "
+                    f"--offset={filler_offset} --size={filler_size}"
+                )
+
+    def precondition_workload_region(self, namespace: NvmeDeviceNamespace, workload_blocks: int,
+        sequential_passes: int = 2, random_write_seconds: int = 1800):
+        
+        workload_bytes = workload_blocks * self.block_size
+        device_ns_path = namespace.get_device_path()
+
+        for i in range(sequential_passes):
+            print(f"  Sequential pass {i + 1}/{sequential_passes}...")
+            run_cmd(
+                f"fio --name=ns{namespace.namespace_id}-precond-seq-{i} "
+                f"--filename={device_ns_path} "
+                f"--rw=write --bs=1M --iodepth=32 --direct=1 --ioengine=libaio "
+                f"--refill_buffers=1 --scramble_buffers=1 "
+                f"--offset=0 --size={workload_bytes}"
+            )
+        if random_write_seconds > 0:
+            print(f"  Random writes for {random_write_seconds}s...")
+            run_cmd(
+                f"fio --name=ns{namespace.namespace_id}-precond-rand "
+                f"--filename={device_ns_path} "
+                f"--rw=randwrite --bs=4k --iodepth=64 --direct=1 --ioengine=libaio "
+                f"--time_based --runtime={random_write_seconds} "
+                f"--offset=0 --size={workload_bytes} "
+                f"--refill_buffers=1 --scramble_buffers=1"
+            )
+    
+    def dsm_workload_region(self, namespace: NvmeDeviceNamespace, workload_blocks: int):
+        run_cmd(
+            f"nvme dsm {namespace.get_device_path()} --ad "
+            f"--slbs=0 --blocks={workload_blocks}"
+        )
+    
+    def format_and_mount_workload_region(self, namespace: NvmeDeviceNamespace, workload_blocks: int) -> str:
+        device_path = namespace.get_device_path()
+        uid = os.getuid()
+        gid = os.getgid()
+
+        run_cmd(
+            f"mkfs.ext4 -F -b 4096 -E root_owner={uid}:{gid} "
+            f"{device_path} {workload_blocks}"
+        )
+
+        run_cmd("udevadm settle")
+        time.sleep(2)
+ 
+        mount_output = run_cmd(
+            f"udisksctl mount -b {device_path} --no-user-interaction"
+        )
+        match = re.search(
+            r"^Mounted \/dev\/nvme\dn\d+ at (\/run\/media\/itu\/[a-f\d-]+)",
+            mount_output, re.MULTILINE,
+        )
+        if match is None:
+            raise RuntimeError(
+                f"Failed to parse udisksctl mount output for {device_path}: "
+                f"{mount_output!r}"
+            )
+        mount_path = match.group(1)
+        namespace.is_mounted = True
+        print(f"  Mounted at {mount_path}")
+        return mount_path
+
 
     def get_written_bytes_nsid(self, namespace_id: int):
         for namespace in self.namespaces:
@@ -388,22 +533,36 @@ def verify_steady_state(log_file="steadystate_iops.1.log", evaluation_window_sam
     else:
         print("The NVMe Drive is not in a steady state")
 
-def parse_fdp_handles(mapping: str) -> list[int]:
+def parse_fdp_handles(mapping: str, benchmark_filter: str = None) -> list[int]:
     """
-    Extract sorted, unique non-zero RUH IDs from a mapping string.
-    'tpch.db:1,tpch.wal:2,ycsb.db:3,.tmp:5' -> [1, 2, 3, 5]
-    RUH 0 is the default and is always available; don't include it.
+    Extract RUH IDs from a mapping string, filtered by benchmark.
+    Explicitly includes RUH 0 as the mandatory default fallback.
+    Pads the array so the array index (PI) mathematically matches the physical RUH.
     """
     if not mapping:
-        return []
-    handles = set()
+        return [0]
+
+    handles = {0}
     for pair in mapping.split(','):
         kv = pair.split(':')
         if len(kv) == 2:
+            filename = kv[0].strip()
             try:
                 ruh = int(kv[1].strip())
-                if ruh > 0:
-                    handles.add(ruh)
             except ValueError:
-                pass
-    return sorted(handles)
+                continue
+            
+            if benchmark_filter is None:
+                handles.add(ruh)
+            else:
+                # Include if it matches the benchmark prefix (e.g., tpch.db, ycsb.wal)
+                if filename.startswith(benchmark_filter):
+                    handles.add(ruh)
+                # Include .tmp ONLY if the benchmark is TPCH (since YCSB doesn't spill)
+                elif filename.startswith(".tmp") and benchmark_filter == "tpch":
+                    handles.add(ruh)
+
+    max_ruh = max(handles)
+    # Pad the list so the index (PI) matches the physical RUH value
+    padded_phndls = [i if i in handles else 0 for i in range(max_ruh + 1)]
+    return padded_phndls

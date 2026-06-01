@@ -50,11 +50,11 @@
         ["nofdp"]=""
         ["baseline"]=".db:1,.wal:1,.tmp:1"
         ["temp-isolated"]=".db:1,.wal:1,.tmp:2"
-        ["wal-isolated"]=".db:1,.wal:2,.tmp:1"
-        ["fully-isolated"]=".db:1,.wal:2,.tmp:3"
+        ["wal-isolated"]="ycsb.db:1,ycsb.wal:2,.tmp:1"
+        ["fully-isolated"]=".db:1,.wal:2,.tmp:0"
     )
 
-    FDP_STRATEGIES=("nofdp" "wal-isolated")
+    FDP_STRATEGIES=("fully-isolated")
 
     # ==========================================
     # Environment Setup
@@ -77,13 +77,15 @@
 
     # YCSB Configs: SF MEM_LIMIT DB_GB TEMP_GB DURATION_MIN
     CONFIGS=(
-        "200 45000 395 5 480"
+        "200 45000 390 5 480"
     )
 
     # WAL 
     PRECOND_STATES=(1)
     FIO_FILE="fio/uniform.fio"
     SETTLE_SECONDS=900
+
+    FRAGMENTATION_FILE="scripts/fragmentation.sh"
 
     SUITE_START_TIMESTAMP=$(date +%s)
     SUITE_START_STR=$(date '+%Y-%m-%d %H:%M:%S')
@@ -167,7 +169,7 @@
                         "${PRECOND_ARGS[@]}" \
                         "${DRAIN_ARGS[@]}" \
                         "${FDP_ARGS[@]}" \
-                        "${WAL_SKIP_ARGS[@]}" 
+                        --frag_script_path "$FRAGMENTATION_FILE"
 
                     sleep 1
                 done

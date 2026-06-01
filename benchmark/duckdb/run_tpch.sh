@@ -47,11 +47,14 @@ declare -A FDP_MAPPINGS=(
     ["baseline"]=".db:1,.wal:1,.tmp:1"
     ["temp-isolated"]=".db:1,.wal:1,.tmp:2"
     ["wal-isolated"]=".db:1,.wal:2,.tmp:1"
-    ["fully-isolated"]=".db:1,.wal:2,.tmp:3"
+    ["fully-isolated"]=".db:1,.wal:0,.tmp:2"
 )
 
 # Which strategies to run this suite.
-FDP_STRATEGIES=("nofdp" "temp-isolated" "baseline")
+FDP_STRATEGIES=("temp-isolated")
+
+# Fragmentation Script
+FRAGMENTATION_FILE="scripts/fragmentation.sh"
 
 # ==========================================
 # Environment Setup
@@ -78,7 +81,7 @@ fi
 # TPCH Configs: SF MEM_LIMIT DB_GB TEMP_SIZE_GB DURATION_MIN
 CONFIGS=(
     # "1000 12000 300 90"
-    "3000 38000 900 250 480"
+    "3000 38000 820 250 480"
 )
 
 PRECOND_STATES=(1)
@@ -92,12 +95,25 @@ SUITE_START_STR=$(date '+%Y-%m-%d %H:%M:%S')
 
 # ==========================================
 # TPC-H Suite
-# ==========================================
+# ========================= =================
 for config in "${CONFIGS[@]}"; do
     read -r TPCH_SF MEM_LIMIT DB_GB TEMP_SIZE DURATION_MIN <<< "$config"
-    NS_GB=$(( DB_GB + 1 + TEMP_SIZE ))
-    NS_GB=$(( NS_GB + (NS_GB / 100) ))   # +1% slack
-    WORKLOAD_NS_SIZE=$(( NS_GB * 1024 * 1024 * 1024 / 4096 ))
+    
+    BLOCK_SIZE=4096
+    MB_BYTES=$(( 1024 * 1024 ))
+    GB_BYTES=$(( 1024 * 1024 * 1024 ))
+
+    BLOCKS_PER_MB=$(( MB_BYTES / BLOCK_SIZE ))
+    BLOCKS_PER_GB=$(( GB_BYTES / BLOCK_SIZE ))
+
+    # Calculate exact capacity in 4096-byte blocks
+    DB_BLOCKS=$(( DB_GB * BLOCKS_PER_GB ))
+    TEMP_BLOCKS=$(( TEMP_SIZE * BLOCKS_PER_GB ))
+    WAL_BLOCKS=$(( 32 * BLOCKS_PER_MB ))
+
+    # Total capacity + 1% slack
+    TOTAL_BLOCKS=$(( DB_BLOCKS + TEMP_BLOCKS + WAL_BLOCKS ))
+    WORKLOAD_NS_SIZE=$(( TOTAL_BLOCKS + (TOTAL_BLOCKS / 100) ))
 
     DB_CONFIGS="tpch:${DB_GB}GB"
 
@@ -137,7 +153,8 @@ for config in "${CONFIGS[@]}"; do
                 "${FILLER_ARGS[@]}" \
                 "${PRECOND_ARGS[@]}" \
                 "${DRAIN_ARGS[@]}" \
-                "${FDP_ARGS[@]}"
+                "${FDP_ARGS[@]}" \
+                --frag_script_path "$FRAGMENTATION_FILE"
 
             sleep 1
         done
